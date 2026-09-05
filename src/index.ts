@@ -17,6 +17,7 @@ import {
   loadAgentConfig,
 } from './agent/config.js';
 import { startAgentScheduler, stopAgentScheduler } from './agent/scheduler.js';
+import { startMultiScheduler, stopMultiScheduler } from './strategy/multiScheduler.js';
 import { acquireInstanceLock, defaultLockPath, releaseInstanceLock } from './instanceLock.js';
 import { resolveHealthPort, setLifecycleState, startHealthServer, stopHealthServer } from './health.js';
 import { registerFatalErrorHandlers } from './fatalError.js';
@@ -246,6 +247,10 @@ async function main() {
   // agent/config.ts's doc comment on why this is a separate opt-in from
   // AGENT_MODE, which only gates the manual /agent command).
   startAgentScheduler(bot);
+  // Autonomous MULTI scheduler (deterministic, no LLM) — no-ops entirely
+  // unless STRATEGY=multi AND MULTI_AUTONOMOUS_SCHEDULE=on are BOTH
+  // explicitly set (same opt-in split as the agent scheduler above).
+  startMultiScheduler(bot);
 
   bot.start({
     allowed_updates: ['message', 'callback_query'],
@@ -282,6 +287,7 @@ async function main() {
     await stopTpslWatcher();
     stopVolumeAlertWatcher();
     stopAgentScheduler();
+    stopMultiScheduler();
     bot.stop();
     releaseInstanceLock(lockPath);
     setLifecycleState('stopped');
@@ -292,6 +298,7 @@ async function main() {
     await stopTpslWatcher();
     stopVolumeAlertWatcher();
     stopAgentScheduler();
+    stopMultiScheduler();
     bot.stop();
     releaseInstanceLock(lockPath);
     setLifecycleState('stopped');

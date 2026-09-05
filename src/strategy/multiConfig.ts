@@ -113,6 +113,20 @@ export type MultiConfig = {
   entryCooldownMs: number;
   tpPercent: number;
   slPercent: number;
+  /**
+   * Whether the deterministic MULTI strategy (runMultiStrategy) runs on its
+   * OWN schedule (src/strategy/multiScheduler.ts) rather than only ever
+   * being triggered on demand via /multi. Default OFF even when
+   * STRATEGY=multi — mirrors agent/config.ts's AgentConfig.autonomousSchedule
+   * split from AGENT_MODE exactly: STRATEGY=multi alone only makes the
+   * manual /multi command available; nothing runs on its own until this is
+   * ALSO explicitly turned on. A periodic, fully automatic capital-moving
+   * loop is a materially bigger step up in autonomy than an operator
+   * manually choosing to run it once, and deserves its own explicit opt-in.
+   */
+  autonomousSchedule: boolean;
+  /** MULTI_SCREENING_INTERVAL_MIN, default 15 — only used when autonomousSchedule is on. */
+  screeningIntervalMs: number;
 };
 
 /** Reads STRATEGY env var — 'multi' opts in explicitly, anything else (incl. unset) is 'default'. */
@@ -274,6 +288,8 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     entryCooldownMs: Math.round(envNum('MULTI_ENTRY_COOLDOWN_MS', 300_000)),
     tpPercent: envNum('MULTI_TP_PERCENT', 10),
     slPercent: envNum('MULTI_SL_PERCENT', 15),
+    autonomousSchedule: (process.env.MULTI_AUTONOMOUS_SCHEDULE ?? 'off').trim().toLowerCase() === 'on',
+    screeningIntervalMs: Math.round(envNum('MULTI_SCREENING_INTERVAL_MIN', 15) * 60_000),
   };
 
   const validation = validateMultiConfig(base);
