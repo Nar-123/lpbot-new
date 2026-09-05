@@ -86,8 +86,8 @@ export function defaultExitConfig(): ExitConfig {
     lowYieldMinAgeMinutes: 60,
     lowYieldMinFeeValueRatio: 0.0005,
     trailingEnabled: false,
-    trailingTriggerPct: 15,
-    trailingDropPct: 5,
+    trailingTriggerPct: 5,
+    trailingDropPct: 3,
   };
 }
 
@@ -279,7 +279,7 @@ export function resolveExitConfig(tpPercent: number, slPercent: number): ExitCon
     lowYieldMinAgeMinutes: Math.max(0, envNum('EXIT_LOW_YIELD_MIN_AGE_MIN', 60)),
     lowYieldMinFeeValueRatio: Math.max(0, envNum('EXIT_LOW_YIELD_MIN_FEE_VALUE_RATIO', 0.0005)),
     trailingEnabled: envBool('EXIT_TRAILING_ENABLED', false),
-    trailingTriggerPct: envNum('EXIT_TRAILING_TRIGGER_PCT', 15),
-    trailingDropPct: Math.max(0.01, envNum('EXIT_TRAILING_DROP_PCT', 5)),
+    trailingTriggerPct: envNum('EXIT_TRAILING_TRIGGER_PCT', 5),
+    trailingDropPct: Math.max(0.01, envNum('EXIT_TRAILING_DROP_PCT', 3)),
   };
 }

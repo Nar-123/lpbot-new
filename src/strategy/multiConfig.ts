@@ -319,7 +319,7 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     maxPositionsPerToken: Math.round(envNum('MULTI_MAX_POSITIONS_PER_TOKEN', 1)),
     maxExposureUsd: envNum('MULTI_MAX_EXPOSURE_USD', 500),
     entryCooldownMs: Math.round(envNum('MULTI_ENTRY_COOLDOWN_MS', 300_000)),
-    tpPercent: envNum('MULTI_TP_PERCENT', 10),
+    tpPercent: envNum('MULTI_TP_PERCENT', 50),
     slPercent: envNum('MULTI_SL_PERCENT', 15),
     autonomousSchedule: (process.env.MULTI_AUTONOMOUS_SCHEDULE ?? 'off').trim().toLowerCase() === 'on',
     screeningIntervalMs: Math.round(envNum('MULTI_SCREENING_INTERVAL_MIN', 15) * 60_000),

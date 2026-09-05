@@ -4,7 +4,7 @@
  * - Global toggle: settings tpSlEnabled
  * - Per-position: /tp #id (optional tp% sl%)
  * - Every POLL_MS: compute PnL for enrolled open positions
- * - On hit: notify → wait CONFIRM_MS → recheck; if still hit → close
+ * - On hit: notify → wait getConfirmMsForRule(rule) → recheck; if still hit → close
  */
 import type { Bot } from 'grammy';
 import { config, CHAINS, type SupportedChainId, isSupportedChainId } from '../config.js';
@@ -45,7 +45,40 @@ import {
 export { classify } from './tpslLogic.js';
 
 const POLL_MS = 30_000;
-const CONFIRM_MS = 5_000;
+
+function envNum(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (raw == null || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Base confirmation delay for 6 of the 7 close rules — read fresh on every
+ * call (never cached at module load) so an operator override is honored
+ * immediately, matching this codebase's existing resolveExitConfig()/
+ * loadMultiConfig() convention of re-reading env per call rather than once.
+ * TPSL_CONFIRM_MS, default 5000 (5s) — unchanged from before this was
+ * configurable.
+ */
+function getBaseConfirmMs(): number {
+  return Math.max(0, envNum('TPSL_CONFIRM_MS', 5_000));
+}
+
+/**
+ * trailing_tp gets its own, longer, separately-configurable confirmation
+ * delay (EXIT_TRAILING_CONFIRM_MS, default 10_000 — 10s) — trailing exits
+ * are more noise-prone than a flat TP/SL level (price can wobble slightly
+ * off a fresh peak without that being a genuine reversal), so confirming
+ * over a longer window filters that out. Every other rule keeps the base
+ * delay above unchanged, so stop-loss/take-profit/etc. stay exactly as
+ * responsive as before this rule existed.
+ */
+function getConfirmMsForRule(rule: CloseRule): number {
+  if (rule === 'trailing_tp') return Math.max(0, envNum('EXIT_TRAILING_CONFIRM_MS', 10_000));
+  return getBaseConfirmMs();
+}
+
 /**
  * Phase 4.6.4: bounded wait, on shutdown, for any close that had already
  * started (past the recheck, already calling closePosition) before
@@ -69,8 +102,9 @@ type WatcherState = 'stopped' | 'running' | 'stopping';
 
 const pending = new Map<string, Pending>();
 /**
- * Phase 4.6.4: handles for every currently-armed 5s confirmation timer,
- * keyed by position. Previously these setTimeout return values were
+ * Phase 4.6.4: handles for every currently-armed confirmation timer
+ * (delay depends on the armed rule — see getConfirmMsForRule), keyed by
+ * position. Previously these setTimeout return values were
  * discarded entirely — there was no way to cancel an armed trigger's
  * confirmation wait at all; shutdown only *incidentally* neutralized it
  * via pending.clear() (the callback would find nothing pending and
@@ -484,27 +518,28 @@ async function tick(bot: Bot): Promise<void> {
             pnlPct: m.pnlPct ?? 0,
             at: Date.now(),
           });
+          const confirmMs = getConfirmMsForRule(hit);
           console.log(
-            `[tpsl] arm ${hit} ${key} pnl=${m.pnlPct?.toFixed(2)}% — recheck in ${CONFIRM_MS}ms`,
+            `[tpsl] arm ${hit} ${key} pnl=${m.pnlPct?.toFixed(2)}% — recheck in ${confirmMs}ms`,
           );
           await notifyAll(
             bot,
-            `⚠️ Exit trigger (${CLOSE_RULE_LABELS[hit]}) — rechecking in 5s\n` +
+            `⚠️ Exit trigger (${CLOSE_RULE_LABELS[hit]}) — rechecking in ${confirmMs / 1000}s\n` +
               `${m.label} #${p.tokenId} [${p.protocol}] · ${CHAINS[chainId].name}\n` +
               `PnL ${m.pnlPct != null ? `${m.pnlPct >= 0 ? '+' : ''}${m.pnlPct.toFixed(2)}%` : 'n/a'} ` +
               `(${formatUsd(m.pnlUsd)})\n` +
               `Levels: TP +${tp}% · SL -${sl}%\n` +
-              `_Experimental: closes only if still beyond level after 5s_`,
+              `_Experimental: closes only if still beyond level after ${confirmMs / 1000}s_`,
           );
 
-          // Dedicated recheck after 5s (don't wait for next 30s tick).
-          // Handle is tracked so shutdown can actually cancel it — an
-          // armed-but-not-yet-fired trigger must not survive a shutdown
+          // Dedicated recheck after confirmMs (don't wait for next 30s
+          // tick). Handle is tracked so shutdown can actually cancel it —
+          // an armed-but-not-yet-fired trigger must not survive a shutdown
           // request (Phase 4.6.4).
           const t = setTimeout(() => {
             confirmTimers.delete(key);
             void recheckAndMaybeClose(bot, p, hit, tp, sl);
-          }, CONFIRM_MS);
+          }, confirmMs);
           confirmTimers.set(key, t);
           continue;
         }
@@ -576,7 +611,7 @@ async function recheckAndMaybeClose(
     await notifyAll(
       bot,
       `↩️ Exit not confirmed for ${m.label} #${p.tokenId}\n` +
-        `After 5s PnL is ${m.pnlPct != null ? `${m.pnlPct >= 0 ? '+' : ''}${m.pnlPct.toFixed(2)}%` : 'n/a'} — still watching`,
+        `After ${getConfirmMsForRule(expected) / 1000}s PnL is ${m.pnlPct != null ? `${m.pnlPct >= 0 ? '+' : ''}${m.pnlPct.toFixed(2)}%` : 'n/a'} — still watching`,
     );
     return;
   }
@@ -606,7 +641,7 @@ let startupTimer: ReturnType<typeof setTimeout> | null = null;
 export function startTpslWatcher(bot: Bot): void {
   if (timer) return;
   console.log(
-    `[tpsl] experimental watcher started (poll ${POLL_MS / 1000}s, confirm ${CONFIRM_MS / 1000}s)`,
+    `[tpsl] experimental watcher started (poll ${POLL_MS / 1000}s, confirm ${getBaseConfirmMs() / 1000}s, trailing confirm ${getConfirmMsForRule('trailing_tp') / 1000}s)`,
   );
   watcherState = 'running';
   shutdownPromise = null;
@@ -627,7 +662,7 @@ export function startTpslWatcher(bot: Bot): void {
  *    "shutdown started -> watcher polls again -> new transaction
  *    submitted" gap.
  * 2. Stops the poll interval and the (rare) delayed first-tick timer.
- * 3. Cancels every armed-but-not-yet-fired 5s confirmation timer — the
+ * 3. Cancels every armed-but-not-yet-fired confirmation timer — the
  *    actual P2 fix. Previously these handles were discarded; an armed
  *    trigger's confirmation wait could not be cancelled at all.
  * 4. Waits, bounded by SHUTDOWN_DEADLINE_MS, for any close that was
@@ -698,6 +733,9 @@ export function stopTpslWatcher(): Promise<void> {
 
 /** Directly invoke one poll tick — normally only reachable via the internal setInterval. */
 export { tick as __tickForTests };
+
+/** Exposes the per-rule confirmation delay resolution directly — reads env fresh, same as production. */
+export { getConfirmMsForRule as __getConfirmMsForRuleForTests };
 
 export function __getWatcherStateForTests(): WatcherState {
   return watcherState;

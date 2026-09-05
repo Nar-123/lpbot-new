@@ -373,3 +373,12 @@ test('resolveExitConfig: EXIT_TRAILING_ENABLED=on picked up from env', async () 
   delete process.env.EXIT_TRAILING_TRIGGER_PCT;
   delete process.env.EXIT_TRAILING_DROP_PCT;
 });
+
+test('resolveExitConfig: EXIT_TRAILING_TRIGGER_PCT/EXIT_TRAILING_DROP_PCT default to 5/3 when unset', async () => {
+  delete process.env.EXIT_TRAILING_TRIGGER_PCT;
+  delete process.env.EXIT_TRAILING_DROP_PCT;
+  const { resolveExitConfig } = await import('../src/strategy/exitRules.js');
+  const cfg = resolveExitConfig(10, 15);
+  assert.equal(cfg.trailingTriggerPct, 5);
+  assert.equal(cfg.trailingDropPct, 3);
+});
