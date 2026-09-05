@@ -1,7 +1,7 @@
 /**
  * MULTI_MIN_KOL_COUNT config wiring — mirrors
  * strategy.multiConfig.minVolume.test.ts's coverage style, but the
- * semantics differ from minCandidateVolumeUsd: default is 10 (not 0/off),
+ * semantics differ from minCandidateVolumeUsd: default is 3 (not 0/off),
  * and the comparison is GREATER THAN OR EQUAL TO the floor (inclusive) —
  * a candidate whose kolCount equals minKolCount PASSES, matching the
  * field's own name ("minimum"). Set MULTI_MIN_KOL_COUNT=0 explicitly to
@@ -26,15 +26,15 @@ function clearEnv(): void {
   delete process.env.MULTI_MIN_KOL_COUNT;
 }
 
-test('MULTI_MIN_KOL_COUNT defaults to 10 when unset', () => {
+test('MULTI_MIN_KOL_COUNT defaults to 3 when unset', () => {
   clearEnv();
   const cfg = loadMultiConfig(CHAIN);
-  assert.equal(cfg.minKolCount, 10);
+  assert.equal(cfg.minKolCount, 3);
   assert.equal(cfg.enabled, true);
 });
 
 test('a valid positive MULTI_MIN_KOL_COUNT is honored', () => {
-  // Deliberately distinct from the 10 default, so a broken env-parse that
+  // Deliberately distinct from the 3 default, so a broken env-parse that
   // silently fell through to the fallback would NOT coincidentally match.
   process.env.MULTI_MIN_KOL_COUNT = '15';
   try {
@@ -45,11 +45,11 @@ test('a valid positive MULTI_MIN_KOL_COUNT is honored', () => {
   }
 });
 
-test('a malformed (non-numeric) MULTI_MIN_KOL_COUNT falls back to the 10 default, never NaN', () => {
+test('a malformed (non-numeric) MULTI_MIN_KOL_COUNT falls back to the 3 default, never NaN', () => {
   process.env.MULTI_MIN_KOL_COUNT = 'not-a-number';
   try {
     const cfg = loadMultiConfig(CHAIN);
-    assert.equal(cfg.minKolCount, 10);
+    assert.equal(cfg.minKolCount, 3);
     assert.equal(Number.isFinite(cfg.minKolCount), true);
   } finally {
     clearEnv();
@@ -69,7 +69,7 @@ test('a negative MULTI_MIN_KOL_COUNT fails validateMultiConfig — MULTI disable
   }
 });
 
-test('MULTI_MIN_KOL_COUNT=0 explicitly disables the floor (distinct from the 10 default — an explicit opt-out, not "same as unset")', () => {
+test('MULTI_MIN_KOL_COUNT=0 explicitly disables the floor (distinct from the 3 default — an explicit opt-out, not "same as unset")', () => {
   process.env.MULTI_MIN_KOL_COUNT = '0';
   try {
     const cfg = loadMultiConfig(CHAIN);
