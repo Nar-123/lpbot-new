@@ -57,6 +57,10 @@ import { describeMintPreview, mintSingleSided } from '../chain/mint.js';
 import { formatPositionLine, listPositions, listPositionsFast } from '../chain/positions.js';
 import { claimFees, closePosition } from '../chain/close.js';
 import { closeLockKey, releaseCloseLock, tryAcquireCloseLock } from './positionCloseLock.js';
+import { getAgentMode, loadAgentConfig } from '../agent/config.js';
+import { createLlmClientFromConfig } from '../agent/llmClient.js';
+import { runAgent } from '../agent/loop.js';
+import type { AgentRole } from '../agent/types.js';
 import { formatCompactRange, uniswapPositionUrl } from '../chain/prices.js';
 import {
   formatUnits,
@@ -1739,6 +1743,68 @@ export function createBot(): Bot {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       await ctx.reply(`Execution error:\n${msg.slice(0, 400)}`);
+    }
+  });
+
+  // ── /agent — autonomous LLM tool-calling loop (AGENT_MODE=on only) ─────
+  // Deliberately mirrors /multi's own gating style (single env check, clear
+  // refusal message when off) rather than inventing a new pattern. The
+  // agent's own tools (src/agent/tools.ts) are what actually enforce safety
+  // — this handler is just the Telegram entry point, same division of
+  // responsibility as executeClosePosition/runMultiDryRunReport elsewhere
+  // in this file.
+  bot.command('agent', async (ctx) => {
+    if (!(await requireAuth(ctx))) return;
+    if (getAgentMode() !== 'on') {
+      await ctx.reply('⛔ Agent mode is not active on this bot (set AGENT_MODE=on to enable).');
+      return;
+    }
+    const agentConfig = loadAgentConfig();
+    if (!agentConfig.apiKey) {
+      const missingKeyEnvVar = agentConfig.provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'ANTHROPIC_API_KEY';
+      await ctx.reply(`⛔ ${missingKeyEnvVar} is not set — agent cannot run.`);
+      return;
+    }
+
+    const raw = ctx.message?.text?.replace(/^\/agent(@\w+)?\s*/, '').trim() ?? '';
+    const [firstWord, ...rest] = raw.split(/\s+/);
+    const role: AgentRole = firstWord === 'manager' ? 'manager' : 'screener';
+    const goal = (firstWord === 'manager' || firstWord === 'screener' ? rest.join(' ') : raw).trim();
+    if (!goal) {
+      await ctx.reply(
+        'Usage: `/agent [screener|manager] <goal>`\n' +
+          'e.g. `/agent screener find and evaluate a good entry`\n' +
+          'e.g. `/agent manager review my open positions`',
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    const chainId = getSession(ctx.from!.id).chainId;
+    await ctx.reply(
+      `🤖 Agent (${role}) starting on chain ${chainId} — budget: ${agentConfig.maxActionsPerRun} action(s), ${agentConfig.maxSteps} step(s) max.\n` +
+        `Goal: ${goal}`,
+    );
+
+    try {
+      const llm = createLlmClientFromConfig(agentConfig);
+      const log = await runAgent(role, chainId, goal, { llm, config: agentConfig });
+
+      const lines: string[] = [];
+      lines.push(`Agent run finished — ${log.steps} tool call(s), stopped: ${log.stoppedReason}`);
+      for (const call of log.toolCalls) {
+        lines.push(`• ${call.name}(${JSON.stringify(call.args)}) → ${call.resultSummary}`);
+      }
+      if (log.finalText) {
+        lines.push('', log.finalText);
+      }
+      if (log.error) {
+        lines.push('', `⚠️ Error: ${log.error}`);
+      }
+      await ctx.reply(lines.join('\n').slice(0, 3900));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await ctx.reply(`❌ Agent run failed:\n${msg.slice(0, 500)}`);
     }
   });
 
@@ -4079,6 +4145,34 @@ async function executeClosePositionLocked(
     if (ctx.from) {
       resetFlow(ctx.from.id);
       syncSessionFromPrefs(ctx.from.id);
+    }
+
+    // Best-effort self-tuning recalculation — same as tpslWatcher.ts's
+    // automated close path; a manual /close on a MULTI-opened position must
+    // also feed its outcome back into the tuning history. Never blocks or
+    // fails the close itself.
+    try {
+      const { recalculateAndPersistWeights } = await import('../strategy/signalWeights.js');
+      await recalculateAndPersistWeights(chainId);
+    } catch (e) {
+      console.warn('[close] signal weight recalculation failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+
+    // Best-effort LLM lesson (src/agent/lessons.ts) — same gating as
+    // tpslWatcher.ts's automated close path.
+    try {
+      const { getAgentMode, loadAgentConfig } = await import('../agent/config.js');
+      if (getAgentMode() === 'on') {
+        const agentConfig = loadAgentConfig();
+        if (agentConfig.apiKey) {
+          const { createLlmClientFromConfig } = await import('../agent/llmClient.js');
+          const { generateLessonForClose } = await import('../agent/lessons.js');
+          const llm = createLlmClientFromConfig(agentConfig);
+          await generateLessonForClose(chainId, tokenId.toString(), 'manual', { llm });
+        }
+      }
+    } catch (e) {
+      console.warn('[close] lesson generation failed (non-fatal):', e instanceof Error ? e.message : e);
     }
 
     await ctx.reply(

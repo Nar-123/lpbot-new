@@ -94,6 +94,111 @@ function rejectCandidate(candidate: MultiCandidate, reason: string): RejectedCan
 }
 
 /**
+ * The single per-candidate pipeline: pool discovery → range calc → risk gate
+ * → (optional) execute. Extracted from runMultiStrategy's loop body so any
+ * OTHER caller (currently: the agent's `deploy_position` tool, src/agent/
+ * tools.ts) evaluates a candidate through the exact same validation path —
+ * never a second, hand-rolled copy that could silently drift from this one
+ * and skip a check. Behavior-identical to the inline loop this replaced;
+ * runMultiStrategy's own tests are unchanged and still pass, which is the
+ * regression guard for that claim.
+ */
+export async function evaluateAndExecuteCandidate(
+  candidate: MultiCandidate,
+  config: MultiConfig,
+  opts: {
+    dryRun: boolean;
+    prefs: UserPrefs;
+    poolFetcher?: PoolFetcher;
+    mintFn?: MintFn;
+    verifyLiquidityFn?: LiquidityCheckFn;
+    exposureEstimator?: IncomingExposureEstimator;
+  },
+): Promise<
+  | { outcome: 'rejected'; rejected: RejectedCandidate }
+  | { outcome: 'dry_run_intent'; intent: TradeIntent }
+  | { outcome: 'executed'; intent: TradeIntent; tokenId: string; txHash: string }
+> {
+  const { selected, poolFetchError } = await discoverAndScorePoolsForCandidate(config, candidate, {
+    poolFetcher: opts.poolFetcher,
+  });
+
+  if (!selected) {
+    if (poolFetchError) {
+      console.warn(
+        `[multi] pool discovery failed for ${candidate.address} on chain ${config.chainId}: ${poolFetchError.message}`,
+      );
+      return { outcome: 'rejected', rejected: rejectCandidate(candidate, 'POOL_FETCH_ERROR') };
+    }
+    return { outcome: 'rejected', rejected: rejectCandidate(candidate, 'NO_VALID_POOL') };
+  }
+
+  const live = await loadLivePoolState(config.chainId, selected);
+  if (!live) {
+    return { outcome: 'rejected', rejected: rejectCandidate(candidate, 'INVALID_PRICE') };
+  }
+
+  const usdgIsToken0 = live.token0.toLowerCase() === (config.usdgAddress as string).toLowerCase();
+  const range = computeMultiRange({
+    currentTick: live.currentTick,
+    tickSpacing: live.tickSpacing,
+    widthPercent: config.rangePercent,
+    usdgIsToken0,
+  });
+
+  if (!range.valid) {
+    return { outcome: 'rejected', rejected: rejectCandidate(candidate, range.rejectedReason) };
+  }
+
+  const intent: TradeIntent = {
+    strategy: 'multi',
+    chainId: config.chainId,
+    token: candidate.address,
+    quoteToken: config.usdgAddress as string,
+    pool: selected,
+    fee: selected.fee ?? 0,
+    side: range.side,
+    range: { tickLower: range.tickLower, tickUpper: range.tickUpper },
+    positionSize:
+      config.positionSizeUsd != null
+        ? { sizeMode: 'fixed', fixedAmountHuman: config.positionSizeUsd }
+        : {
+            sizeMode: opts.prefs.sizeMode,
+            balancePercent: opts.prefs.balancePercent,
+            fixedAmountHuman: opts.prefs.fixedAmountHuman,
+          },
+    depositToken: config.usdgAddress as string,
+    reason: `candidateScore=${candidate.candidateScore.toFixed(3)} poolScore=${selected.totalScore.toFixed(3)}`,
+    candidateScore: candidate.candidateScore,
+    poolScore: selected.totalScore,
+  };
+
+  const gate = await runRiskGate(intent, config, { exposureEstimator: opts.exposureEstimator });
+  const failure = gate.find((r) => !r.pass);
+  if (failure) {
+    return { outcome: 'rejected', rejected: rejectCandidate(candidate, failure.reason ?? 'RISK_GATE_FAILED') };
+  }
+
+  if (opts.dryRun) {
+    return { outcome: 'dry_run_intent', intent };
+  }
+
+  const outcome = await executeTradeIntent({
+    intent,
+    candidate,
+    config,
+    prefs: opts.prefs,
+    mintFn: opts.mintFn,
+    verifyLiquidityFn: opts.verifyLiquidityFn,
+    exposureEstimator: opts.exposureEstimator,
+  });
+  if ('skipped' in outcome) {
+    return { outcome: 'rejected', rejected: rejectCandidate(candidate, outcome.reason) };
+  }
+  return { outcome: 'executed', intent, tokenId: outcome.tokenId, txHash: outcome.txHash };
+}
+
+/**
  * Re-validates and then executes a single TradeIntent through the existing
  * execution pipeline (mintSingleSided → journalledSend → tx lock → journal →
  * receipt → accounting). MULTI never calls a wallet client directly and
@@ -196,6 +301,18 @@ export async function executeTradeIntent(params: {
     protocol: result.protocol ?? 'v3',
     dex: result.dex ?? 'uniswap',
     strategy: 'multi',
+    entrySignals: {
+      marketCapUsd: candidate.marketCapUsd ?? 0,
+      volume6hUsd: candidate.volume6hUsd ?? 0,
+      ageHours: candidate.ageHours ?? 0,
+      poolTvlUsd: intent.pool.tvlUsd ?? 0,
+      poolVolumeUsd: intent.pool.volumeUsd ?? 0,
+      poolVolumeTvlRatio:
+        intent.pool.tvlUsd != null && intent.pool.tvlUsd > 0 && intent.pool.volumeUsd != null
+          ? intent.pool.volumeUsd / intent.pool.tvlUsd
+          : 0,
+      poolFee: intent.pool.fee ?? 0,
+    },
   });
 
   const usdgMeta = await getTokenMeta(intent.chainId, usdgAddress);
@@ -330,91 +447,22 @@ export async function runMultiStrategy(
   const prefs = opts?.prefs ?? DEFAULT_PREFS;
 
   for (const candidate of candidates) {
-    const { selected, poolFetchError } = await discoverAndScorePoolsForCandidate(config, candidate, {
+    const result = await evaluateAndExecuteCandidate(candidate, config, {
+      dryRun,
+      prefs,
       poolFetcher: opts?.poolFetcher,
+      mintFn: opts?.mintFn,
+      verifyLiquidityFn: opts?.verifyLiquidityFn,
+      exposureEstimator: opts?.exposureEstimator,
     });
 
-    if (!selected) {
-      if (poolFetchError) {
-        // Phase 4.7 fix: an infrastructure failure while fetching pools must
-        // not be recorded as "this candidate has no valid pool" — that reason
-        // code is meant for a genuine data-quality verdict, not an outage.
-        console.warn(
-          `[multi] pool discovery failed for ${candidate.address} on chain ${config.chainId}: ${poolFetchError.message}`,
-        );
-        rejected.push(rejectCandidate(candidate, 'POOL_FETCH_ERROR'));
-      } else {
-        rejected.push(rejectCandidate(candidate, 'NO_VALID_POOL'));
-      }
+    if (result.outcome === 'rejected') {
+      rejected.push(result.rejected);
       continue;
     }
-
-    const live = await loadLivePoolState(config.chainId, selected);
-    if (!live) {
-      rejected.push(rejectCandidate(candidate, 'INVALID_PRICE'));
-      continue;
-    }
-
-    const usdgIsToken0 = live.token0.toLowerCase() === config.usdgAddress.toLowerCase();
-    const range = computeMultiRange({
-      currentTick: live.currentTick,
-      tickSpacing: live.tickSpacing,
-      widthPercent: config.rangePercent,
-      usdgIsToken0,
-    });
-
-    if (!range.valid) {
-      rejected.push(rejectCandidate(candidate, range.rejectedReason));
-      continue;
-    }
-
-    const intent: TradeIntent = {
-      strategy: 'multi',
-      chainId: config.chainId,
-      token: candidate.address,
-      quoteToken: config.usdgAddress,
-      pool: selected,
-      fee: selected.fee ?? 0,
-      side: range.side,
-      range: { tickLower: range.tickLower, tickUpper: range.tickUpper },
-      positionSize:
-        config.positionSizeUsd != null
-          ? { sizeMode: 'fixed', fixedAmountHuman: config.positionSizeUsd }
-          : {
-              sizeMode: prefs.sizeMode,
-              balancePercent: prefs.balancePercent,
-              fixedAmountHuman: prefs.fixedAmountHuman,
-            },
-      depositToken: config.usdgAddress,
-      reason: `candidateScore=${candidate.candidateScore.toFixed(3)} poolScore=${selected.totalScore.toFixed(3)}`,
-      candidateScore: candidate.candidateScore,
-      poolScore: selected.totalScore,
-    };
-
-    const gate = await runRiskGate(intent, config, { exposureEstimator: opts?.exposureEstimator });
-    const failure = gate.find((r) => !r.pass);
-    if (failure) {
-      rejected.push(rejectCandidate(candidate, failure.reason ?? 'RISK_GATE_FAILED'));
-      continue;
-    }
-
-    intents.push(intent);
-
-    if (!dryRun) {
-      const outcome = await executeTradeIntent({
-        intent,
-        candidate,
-        config,
-        prefs,
-        mintFn: opts?.mintFn,
-        verifyLiquidityFn: opts?.verifyLiquidityFn,
-        exposureEstimator: opts?.exposureEstimator,
-      });
-      if ('skipped' in outcome) {
-        rejected.push(rejectCandidate(candidate, outcome.reason));
-      } else {
-        executed.push({ tokenId: outcome.tokenId, txHash: outcome.txHash, intent });
-      }
+    intents.push(result.intent);
+    if (result.outcome === 'executed') {
+      executed.push({ tokenId: result.tokenId, txHash: result.txHash, intent: result.intent });
     }
   }
 

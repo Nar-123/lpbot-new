@@ -1,6 +1,41 @@
 import { type Address, isAddress } from 'viem';
 import { CHAINS, isSupportedChainId, type SupportedChainId } from '../config.js';
+import { getTunedSignalWeights } from '../db/index.js';
 import type { StrategyName } from './types.js';
+
+/**
+ * Named range-width presets — inspired by meridian-rs's `target_downside_pct`
+ * concept (a target price-coverage percentage for the single-sided range),
+ * adapted for operators who'd rather pick "tight/normal/wide" than reason
+ * about a raw percentage. Unlike meridian-rs's DLMM liquidity SHAPES
+ * (spot/curve/bid-ask — a Meteora-bin-specific concept with no Uniswap v3
+ * equivalent in a single position, since v3 liquidity within one tick range
+ * is always uniform), this is purely a WIDTH choice — the one part of
+ * meridian's range strategy that has a direct, faithful analogue here.
+ */
+export type MultiRangePreset = 'tight' | 'normal' | 'wide' | 'custom';
+
+const RANGE_PRESETS: Record<Exclude<MultiRangePreset, 'custom'>, number> = {
+  tight: 15,
+  normal: 50,
+  wide: 80,
+};
+
+/**
+ * MULTI_RANGE_PERCENT (explicit) always wins when set — zero behavior change
+ * for any existing operator who already configured a raw percentage before
+ * presets existed. Only when it's unset does MULTI_RANGE_PRESET (default
+ * 'normal', i.e. today's 50% default) pick the width instead.
+ */
+function resolveRangePercent(): { percent: number; preset: MultiRangePreset } {
+  const explicit = process.env.MULTI_RANGE_PERCENT?.trim();
+  if (explicit) {
+    return { percent: envNum('MULTI_RANGE_PERCENT', 50), preset: 'custom' };
+  }
+  const raw = (process.env.MULTI_RANGE_PRESET ?? 'normal').trim().toLowerCase();
+  const preset: MultiRangePreset = raw === 'tight' || raw === 'wide' ? raw : 'normal';
+  return { percent: RANGE_PRESETS[preset], preset };
+}
 
 export type MultiConfig = {
   enabled: boolean;
@@ -26,6 +61,17 @@ export type MultiConfig = {
   minCandidateVolumeUsd: number;
   topN: number;
   rangePercent: number;
+  rangePreset: MultiRangePreset;
+  /**
+   * Safety envelope on the RESOLVED rangePercent (whichever of
+   * preset/custom produced it) — mirrors meridian-rs's
+   * min_bins_below/max_bins_below sanity bounds on its own range sizing.
+   * A resolved width outside [min, max] fails MULTI closed at config-load
+   * (this codebase's existing fail-closed convention — see
+   * validateMultiConfig), rather than being silently clamped into range.
+   */
+  minRangePercent: number;
+  maxRangePercent: number;
   /** null = fall back to the user's existing size prefs (UserPrefs) */
   positionSizeUsd: number | null;
   /** null = no known USDG address for this chain/config — MULTI entry disabled */
@@ -97,6 +143,12 @@ function envNum(key: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function envBool(key: string, fallback: boolean): boolean {
+  const raw = process.env[key]?.trim().toLowerCase();
+  if (raw == null || raw === '') return fallback;
+  return raw === '1' || raw === 'true' || raw === 'on';
+}
+
 function envPositiveOrNull(key: string): number | null {
   const raw = process.env[key];
   if (raw == null || raw.trim() === '') return null;
@@ -137,6 +189,32 @@ function resolveUsdgAddress(chainId: SupportedChainId): Address | null {
 
 export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
   const resolvedChainId = resolveChainId(chainId);
+  const { percent: rangePercent, preset: rangePreset } = resolveRangePercent();
+
+  let poolTvlWeight = envNum('MULTI_POOL_TVL_WEIGHT', 0.3);
+  let poolVolumeWeight = envNum('MULTI_POOL_VOLUME_WEIGHT', 0.3);
+  let poolVolumeTvlWeight = envNum('MULTI_POOL_VOLUME_TVL_WEIGHT', 0.25);
+  let poolFeeWeight = envNum('MULTI_POOL_FEE_WEIGHT', 0.15);
+
+  // Self-tuning weights (src/strategy/signalWeights.ts) — opt-in, default
+  // OFF: existing operators see zero behavior change unless they explicitly
+  // enable this. When on, the LAST persisted tuned weight set (updated
+  // after each closed MULTI position — see tpslWatcher.ts/bot.ts's close
+  // paths) overrides the static env/default weights above. No tuned data
+  // yet (never recalculated) falls through to the static values unchanged.
+  if (envBool('MULTI_SELF_TUNE_WEIGHTS', false)) {
+    try {
+      const tuned = getTunedSignalWeights();
+      if (tuned) {
+        if (tuned.poolTvlUsd != null) poolTvlWeight = tuned.poolTvlUsd;
+        if (tuned.poolVolumeUsd != null) poolVolumeWeight = tuned.poolVolumeUsd;
+        if (tuned.poolVolumeTvlRatio != null) poolVolumeTvlWeight = tuned.poolVolumeTvlRatio;
+        if (tuned.poolFee != null) poolFeeWeight = tuned.poolFee;
+      }
+    } catch {
+      // DB unavailable (e.g. very early startup) — fall through to static weights, never throw.
+    }
+  }
 
   const base: MultiConfig = {
     enabled: true,
@@ -146,13 +224,16 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 24),
     minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 0),
     topN: Math.round(envNum('MULTI_TOP_N', 10)),
-    rangePercent: envNum('MULTI_RANGE_PERCENT', 50),
+    rangePercent,
+    rangePreset,
+    minRangePercent: envNum('MULTI_MIN_RANGE_PERCENT', 10),
+    maxRangePercent: envNum('MULTI_MAX_RANGE_PERCENT', 90),
     positionSizeUsd: envPositiveOrNull('MULTI_POSITION_SIZE_USD'),
     usdgAddress: resolveUsdgAddress(resolvedChainId),
-    poolTvlWeight: envNum('MULTI_POOL_TVL_WEIGHT', 0.3),
-    poolVolumeWeight: envNum('MULTI_POOL_VOLUME_WEIGHT', 0.3),
-    poolVolumeTvlWeight: envNum('MULTI_POOL_VOLUME_TVL_WEIGHT', 0.25),
-    poolFeeWeight: envNum('MULTI_POOL_FEE_WEIGHT', 0.15),
+    poolTvlWeight,
+    poolVolumeWeight,
+    poolVolumeTvlWeight,
+    poolFeeWeight,
     maxOpenPositions: Math.round(envNum('MULTI_MAX_OPEN_POSITIONS', 3)),
     maxPositionsPerToken: Math.round(envNum('MULTI_MAX_POSITIONS_PER_TOKEN', 1)),
     maxExposureUsd: envNum('MULTI_MAX_EXPOSURE_USD', 500),
@@ -187,6 +268,21 @@ export function validateMultiConfig(c: MultiConfig): { valid: boolean; reason?: 
   }
   if (!(c.rangePercent > 0 && c.rangePercent < 100)) {
     return { valid: false, reason: 'MULTI_RANGE_PERCENT must be between 0 and 100 exclusive' };
+  }
+  if (!(c.minRangePercent > 0)) {
+    return { valid: false, reason: 'MULTI_MIN_RANGE_PERCENT must be > 0' };
+  }
+  if (!(c.maxRangePercent > c.minRangePercent)) {
+    return {
+      valid: false,
+      reason: 'MULTI_MAX_RANGE_PERCENT must be greater than MULTI_MIN_RANGE_PERCENT',
+    };
+  }
+  if (c.rangePercent < c.minRangePercent || c.rangePercent > c.maxRangePercent) {
+    return {
+      valid: false,
+      reason: `Resolved range width ${c.rangePercent}% (preset=${c.rangePreset}) is outside the configured safety bounds [${c.minRangePercent}%, ${c.maxRangePercent}%] — widen MULTI_MIN_RANGE_PERCENT/MULTI_MAX_RANGE_PERCENT or pick a different MULTI_RANGE_PRESET/MULTI_RANGE_PERCENT`,
+    };
   }
   if (c.positionSizeUsd != null && !(c.positionSizeUsd > 0)) {
     return { valid: false, reason: 'MULTI_POSITION_SIZE_USD must be > 0 when set' };
