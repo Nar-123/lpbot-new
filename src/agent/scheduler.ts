@@ -12,7 +12,7 @@
 import type { Bot } from 'grammy';
 import { CHAINS, isSupportedChainId, type SupportedChainId } from '../config.js';
 import { getAgentMode, loadAgentConfig, type AgentConfig } from './config.js';
-import { createAnthropicClient } from './llmClient.js';
+import { createLlmClientFromConfig } from './llmClient.js';
 import { runAgent } from './loop.js';
 import type { AgentRunLog } from './types.js';
 
@@ -65,7 +65,7 @@ async function runOneCycle(bot: Bot, role: 'screener' | 'manager', agentConfig: 
       role === 'screener'
         ? `Look for one good MULTI candidate to enter on chain ${CHAINS[chainId].name} and deploy into it if one clearly qualifies. It is completely fine to conclude that nothing qualifies right now.`
         : `Review currently open positions on chain ${CHAINS[chainId].name} and close any that should be closed. It is completely fine to conclude that no action is needed right now.`;
-    const llm = createAnthropicClient(agentConfig.apiKey!, agentConfig.model);
+    const llm = createLlmClientFromConfig(agentConfig);
     const log = await deps.runAgent(role, chainId, goal, { llm, config: agentConfig });
     await notifyAll(bot, summarize(log));
   } catch (e) {

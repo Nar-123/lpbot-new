@@ -58,7 +58,7 @@ import { formatPositionLine, listPositions, listPositionsFast } from '../chain/p
 import { claimFees, closePosition } from '../chain/close.js';
 import { closeLockKey, releaseCloseLock, tryAcquireCloseLock } from './positionCloseLock.js';
 import { getAgentMode, loadAgentConfig } from '../agent/config.js';
-import { createAnthropicClient } from '../agent/llmClient.js';
+import { createLlmClientFromConfig } from '../agent/llmClient.js';
 import { runAgent } from '../agent/loop.js';
 import type { AgentRole } from '../agent/types.js';
 import { formatCompactRange, uniswapPositionUrl } from '../chain/prices.js';
@@ -1761,7 +1761,8 @@ export function createBot(): Bot {
     }
     const agentConfig = loadAgentConfig();
     if (!agentConfig.apiKey) {
-      await ctx.reply('⛔ ANTHROPIC_API_KEY is not set — agent cannot run.');
+      const missingKeyEnvVar = agentConfig.provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'ANTHROPIC_API_KEY';
+      await ctx.reply(`⛔ ${missingKeyEnvVar} is not set — agent cannot run.`);
       return;
     }
 
@@ -1786,7 +1787,7 @@ export function createBot(): Bot {
     );
 
     try {
-      const llm = createAnthropicClient(agentConfig.apiKey, agentConfig.model);
+      const llm = createLlmClientFromConfig(agentConfig);
       const log = await runAgent(role, chainId, goal, { llm, config: agentConfig });
 
       const lines: string[] = [];
@@ -4164,9 +4165,9 @@ async function executeClosePositionLocked(
       if (getAgentMode() === 'on') {
         const agentConfig = loadAgentConfig();
         if (agentConfig.apiKey) {
-          const { createAnthropicClient } = await import('../agent/llmClient.js');
+          const { createLlmClientFromConfig } = await import('../agent/llmClient.js');
           const { generateLessonForClose } = await import('../agent/lessons.js');
-          const llm = createAnthropicClient(agentConfig.apiKey, agentConfig.model);
+          const llm = createLlmClientFromConfig(agentConfig);
           await generateLessonForClose(chainId, tokenId.toString(), 'manual', { llm });
         }
       }

@@ -10,7 +10,12 @@ import {
 } from './bot/volumeAlertWatcher.js';
 import { recoverMissingLedger } from './pnl/reconcile.js';
 import { assertValidStrategyEnv, loadMultiConfig, validateMultiConfig } from './strategy/index.js';
-import { assertValidAgentModeEnv, getAgentMode, loadAgentConfig } from './agent/config.js';
+import {
+  assertValidAgentLlmProviderEnv,
+  assertValidAgentModeEnv,
+  getAgentMode,
+  loadAgentConfig,
+} from './agent/config.js';
 import { startAgentScheduler, stopAgentScheduler } from './agent/scheduler.js';
 import { acquireInstanceLock, defaultLockPath, releaseInstanceLock } from './instanceLock.js';
 import { resolveHealthPort, setLifecycleState, startHealthServer, stopHealthServer } from './health.js';
@@ -63,11 +68,16 @@ async function main() {
   // invocation instead, so a key added later works without a restart-time
   // dependency ordering requirement.
   assertValidAgentModeEnv();
+  // Same fail-closed validation for the provider switch this option added —
+  // a typo'd AGENT_LLM_PROVIDER must never be silently absorbed into the
+  // 'anthropic' default.
+  assertValidAgentLlmProviderEnv();
   if (getAgentMode() === 'on') {
     const agentConfig = loadAgentConfig();
+    const missingKeyEnvVar = agentConfig.provider === 'openrouter' ? 'OPENROUTER_API_KEY' : 'ANTHROPIC_API_KEY';
     console.log(
-      `[startup] AGENT_MODE=on — model=${agentConfig.model}, maxSteps=${agentConfig.maxSteps}, ` +
-        `maxActionsPerRun=${agentConfig.maxActionsPerRun}${agentConfig.apiKey ? '' : ' — WARNING: ANTHROPIC_API_KEY not set, /agent will refuse until it is'}`,
+      `[startup] AGENT_MODE=on — provider=${agentConfig.provider}, model=${agentConfig.model}, maxSteps=${agentConfig.maxSteps}, ` +
+        `maxActionsPerRun=${agentConfig.maxActionsPerRun}${agentConfig.apiKey ? '' : ` — WARNING: ${missingKeyEnvVar} not set, /agent will refuse until it is`}`,
     );
   }
 

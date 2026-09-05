@@ -36,8 +36,36 @@ export function assertValidAgentModeEnv(): void {
   );
 }
 
+/**
+ * Which LLM backend agent/llmClient.ts's createLlmClientFromConfig
+ * constructs. 'anthropic' (unset AGENT_LLM_PROVIDER) is the default —
+ * byte-for-byte the same behavior as before this option existed. Mirrors
+ * the same fail-closed-on-present-but-unrecognized-value pattern as
+ * AGENT_MODE/STRATEGY/TRADING_MODE elsewhere in this codebase.
+ */
+export type AgentLlmProvider = 'anthropic' | 'openrouter';
+
+const VALID_AGENT_LLM_PROVIDERS: readonly AgentLlmProvider[] = ['anthropic', 'openrouter'];
+
+export function getAgentLlmProvider(): AgentLlmProvider {
+  const raw = (process.env.AGENT_LLM_PROVIDER ?? 'anthropic').trim().toLowerCase();
+  return raw === 'openrouter' ? 'openrouter' : 'anthropic';
+}
+
+/** Startup-time validation — call once, alongside assertValidAgentModeEnv. */
+export function assertValidAgentLlmProviderEnv(): void {
+  const raw = process.env.AGENT_LLM_PROVIDER;
+  if (raw == null) return;
+  const normalized = raw.trim().toLowerCase();
+  if ((VALID_AGENT_LLM_PROVIDERS as readonly string[]).includes(normalized)) return;
+  throw new Error(
+    `Invalid AGENT_LLM_PROVIDER "${raw}": expected one of ${VALID_AGENT_LLM_PROVIDERS.join(', ')} (or unset, which defaults to 'anthropic')`,
+  );
+}
+
 export type AgentConfig = {
   mode: AgentMode;
+  provider: AgentLlmProvider;
   model: string;
   apiKey: string | undefined;
   /** Hard ceiling on LLM round-trips per invocation — mirrors meridian-rs's AgentLoop::max_steps=20. */
@@ -72,10 +100,19 @@ function envNum(key: string, fallback: number): number {
 }
 
 export function loadAgentConfig(): AgentConfig {
+  const provider = getAgentLlmProvider();
+  // Provider-specific defaults so an operator switching AGENT_LLM_PROVIDER
+  // without also setting AGENT_MODEL doesn't end up passing an
+  // Anthropic-only model id to OpenRouter (or vice versa). An explicit
+  // AGENT_MODEL always wins for either provider.
+  const defaultModel = provider === 'openrouter' ? 'openai/gpt-4o-mini' : 'claude-sonnet-4-6';
   return {
     mode: getAgentMode(),
-    model: process.env.AGENT_MODEL?.trim() || 'claude-sonnet-4-6',
-    apiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
+    provider,
+    model: process.env.AGENT_MODEL?.trim() || defaultModel,
+    apiKey:
+      (provider === 'openrouter' ? process.env.OPENROUTER_API_KEY : process.env.ANTHROPIC_API_KEY)?.trim() ||
+      undefined,
     maxSteps: Math.round(envNum('AGENT_MAX_STEPS', 20)),
     maxActionsPerRun: Math.round(envNum('AGENT_MAX_ACTIONS_PER_RUN', 3)),
     autonomousSchedule: (process.env.AGENT_AUTONOMOUS_SCHEDULE ?? 'off').trim().toLowerCase() === 'on',

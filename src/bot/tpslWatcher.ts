@@ -382,9 +382,9 @@ async function executeClose(
       if (getAgentMode() === 'on') {
         const agentConfig = loadAgentConfig();
         if (agentConfig.apiKey) {
-          const { createAnthropicClient } = await import('../agent/llmClient.js');
+          const { createLlmClientFromConfig } = await import('../agent/llmClient.js');
           const { generateLessonForClose } = await import('../agent/lessons.js');
-          const llm = createAnthropicClient(agentConfig.apiKey, agentConfig.model);
+          const llm = createLlmClientFromConfig(agentConfig);
           await generateLessonForClose(chainId, p.tokenId, kind, { llm });
         }
       }
