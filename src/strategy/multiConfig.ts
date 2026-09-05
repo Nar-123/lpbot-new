@@ -1,6 +1,7 @@
 import { type Address, isAddress } from 'viem';
 import { CHAINS, isSupportedChainId, type SupportedChainId } from '../config.js';
 import { getTunedSignalWeights } from '../db/index.js';
+import type { GmgnTrendingInterval } from '../gmgn/cli.js';
 import type { StrategyName } from './types.js';
 
 /**
@@ -41,7 +42,17 @@ export type MultiConfig = {
   enabled: boolean;
   disabledReason?: string;
   chainId: SupportedChainId;
-  interval: '6h';
+  /**
+   * Which GMGN trending window candidates are screened from —
+   * MULTI_CANDIDATE_INTERVAL, one of GmgnTrendingInterval's values
+   * ('1m'|'5m'|'1h'|'6h'|'24h'). SUB-FASE 3C: default '5m' on this branch
+   * (deliberately a faster/higher-risk profile than master, which keeps
+   * '6h' — no attempt is made to reconcile the two). Flows straight
+   * through to fetchAndFilterCandidates' fetcher call
+   * (multiCandidates.ts) and into MultiPositionMeta.candidateInterval
+   * (multiExecute.ts) — never hardcoded at either of those points.
+   */
+  interval: GmgnTrendingInterval;
   minMarketCapUsd: number;
   minTokenAgeHours: number;
   /**
@@ -228,6 +239,28 @@ function resolveUsdgAddress(chainId: SupportedChainId): Address | null {
   return CHAINS[chainId].usdg ?? null;
 }
 
+/**
+ * SUB-FASE 3C: the complete, authoritative list of GMGN trending intervals
+ * this codebase accepts for MULTI_CANDIDATE_INTERVAL — kept in sync with
+ * gmgn/cli.ts's own GmgnTrendingInterval union (not invented independently).
+ */
+const VALID_CANDIDATE_INTERVALS: readonly GmgnTrendingInterval[] = ['1m', '5m', '1h', '6h', '24h'];
+
+/**
+ * Resolve MULTI_CANDIDATE_INTERVAL. Unset -> '5m' (this branch's default —
+ * a deliberately faster/higher-risk profile than master's '6h'; the two are
+ * not reconciled). A PRESENT value is passed through as-is, even if
+ * invalid — mirrors resolveUsdgAddress's own fail-closed convention just
+ * above: this function never silently substitutes the default for a
+ * present-but-wrong value, so validateMultiConfig (the single place that
+ * rejects it) can report exactly what was received.
+ */
+function resolveCandidateInterval(): GmgnTrendingInterval {
+  const raw = process.env.MULTI_CANDIDATE_INTERVAL?.trim();
+  if (!raw) return '5m';
+  return raw as GmgnTrendingInterval;
+}
+
 export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
   const resolvedChainId = resolveChainId(chainId);
   const { percent: rangePercent, preset: rangePreset } = resolveRangePercent();
@@ -260,7 +293,7 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
   const base: MultiConfig = {
     enabled: true,
     chainId: resolvedChainId,
-    interval: '6h',
+    interval: resolveCandidateInterval(),
     minMarketCapUsd: envNum('MULTI_MIN_MARKET_CAP_USD', 1_000_000),
     minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 24),
     minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 200_000),
@@ -304,6 +337,12 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
  * entirely rather than starting with malformed/partial config.
  */
 export function validateMultiConfig(c: MultiConfig): { valid: boolean; reason?: string } {
+  if (!(VALID_CANDIDATE_INTERVALS as readonly string[]).includes(c.interval)) {
+    return {
+      valid: false,
+      reason: `MULTI_CANDIDATE_INTERVAL "${c.interval}" is not valid — expected one of ${VALID_CANDIDATE_INTERVALS.join(', ')}`,
+    };
+  }
   if (!(c.minMarketCapUsd > 0)) {
     return { valid: false, reason: 'MULTI_MIN_MARKET_CAP_USD must be > 0' };
   }

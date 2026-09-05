@@ -126,7 +126,7 @@ export async function fetchAndFilterCandidates(
   try {
     raw = await fetcher({
       chainId: config.chainId,
-      interval: '6h',
+      interval: config.interval,
       limit: Math.min(100, Math.max(config.topN * 5, 50)),
     });
   } catch (e) {

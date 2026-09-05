@@ -389,7 +389,7 @@ export async function executeTradeIntent(params: {
     chainId: intent.chainId,
     tokenId,
     candidateSource: candidate.source,
-    candidateInterval: '6h',
+    candidateInterval: config.interval,
     candidateMarketCapUsd: candidate.marketCapUsd,
     candidateAgeHours: candidate.ageHours,
     candidateVolumeUsd: candidate.volumeUsd,

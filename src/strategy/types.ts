@@ -1,4 +1,5 @@
 import type { DexId, SupportedChainId } from '../config.js';
+import type { GmgnTrendingInterval } from '../gmgn/cli.js';
 import type { SizeMode } from '../chain/tokens.js';
 
 /** Which strategy layer selects/sizes/times entries. Execution pipeline is shared by all. */
@@ -97,7 +98,8 @@ export type MultiPositionMeta = {
   chainId: number;
   tokenId: string;
   candidateSource: 'gmgn_trending_6h';
-  candidateInterval: '6h';
+  /** Which GMGN trending interval was actually in effect (config.interval) when this candidate was screened — never hardcoded, see multiExecute.ts. */
+  candidateInterval: GmgnTrendingInterval;
   candidateMarketCapUsd: number | null;
   candidateAgeHours: number | null;
   candidateVolumeUsd: number | null;

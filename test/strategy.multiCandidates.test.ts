@@ -566,6 +566,32 @@ test('top N: only the configured count survives even when more pass every filter
   assert.ok(rejected.length === 0, 'the 3rd candidate is simply not in top N, not "rejected" with a filter reason');
 });
 
+// ── SUB-FASE 3C: config.interval is threaded through, never hardcoded ────
+
+test('fetchAndFilterCandidates passes config.interval to the fetcher — not a hardcoded "6h"', async () => {
+  const cfg = baseConfig({ interval: '1h' });
+  let receivedInterval: string | undefined;
+  await fetchAndFilterCandidates(cfg, {
+    fetcher: async (params) => {
+      receivedInterval = params.interval;
+      return [];
+    },
+  });
+  assert.equal(receivedInterval, '1h', 'the fetcher must receive config.interval exactly, never a hardcoded literal');
+});
+
+test('fetchAndFilterCandidates: a different config.interval (e.g. "5m") is also passed through unchanged', async () => {
+  const cfg = baseConfig({ interval: '5m' });
+  let receivedInterval: string | undefined;
+  await fetchAndFilterCandidates(cfg, {
+    fetcher: async (params) => {
+      receivedInterval = params.interval;
+      return [];
+    },
+  });
+  assert.equal(receivedInterval, '5m');
+});
+
 // ── Fetch failure fails closed ───────────────────────────────────────────
 
 test('candidate source fetch failure returns no candidates and does not throw', async () => {
