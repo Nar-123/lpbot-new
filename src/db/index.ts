@@ -148,6 +148,18 @@ type PositionRow = {
   sl_percent?: number | null;
   /** Phase 4: which strategy opened this position. Absent = pre-Phase-4 / manual. */
   strategy?: string;
+  /** Multi-rule exit engine state (src/strategy/exitRules.ts) — absent = fresh/never-ticked. */
+  exit_peak_pnl_pct?: number | null;
+  exit_max_drawdown_pct?: number | null;
+  exit_trailing_active?: boolean;
+  exit_out_of_range_since?: number | null;
+  /**
+   * Entry-time signal snapshot (src/strategy/signalWeights.ts) — recorded
+   * once at open, read back once the position closes to build a
+   * PerformanceRecord for self-tuning. Absent for manual/pre-feature
+   * positions; those simply never contribute a training record.
+   */
+  entry_signals?: Record<string, number>;
 };
 
 type LedgerRow = {
@@ -475,6 +487,31 @@ type Store = {
    * used for auditability / the /multi report, not for trading decisions.
    */
   multi_position_meta?: MultiPositionMeta[];
+  /**
+   * Self-tuning signal weights (src/strategy/signalWeights.ts) — the LAST
+   * computed weight set, persisted so a bot restart doesn't lose tuning
+   * progress. Absent = never recalculated yet; callers fall back to the
+   * configured MULTI_POOL_*_WEIGHT defaults (multiConfig.ts), unchanged.
+   */
+  tuned_signal_weights?: Record<string, number>;
+  tuned_signal_weights_updated_at?: number;
+  /**
+   * LLM-generated post-close reflections (src/agent/lessons.ts) — capped,
+   * oldest dropped first, fed into the autonomous agent's system prompt as
+   * historical context. Best-effort content; never read by any
+   * deterministic trading decision (risk gate, exit rules).
+   */
+  lessons?: LessonRow[];
+};
+
+export type LessonRow = {
+  id: string;
+  chainId: number;
+  tokenId: string;
+  content: string;
+  closeReason: string;
+  realizedUsd: number;
+  createdAt: number;
 };
 
 let store: Store | null = null;
@@ -985,6 +1022,8 @@ export function recordOpenPosition(row: {
   dex?: DexId;
   /** Phase 4: which strategy opened this position (e.g. 'multi'). Omit for manual mints. */
   strategy?: string;
+  /** Entry-time signal snapshot for src/strategy/signalWeights.ts. Omit for manual mints. */
+  entrySignals?: Record<string, number>;
 }): void {
   const s = load();
   const protocol = row.protocol ?? 'v3';
@@ -1024,6 +1063,7 @@ export function recordOpenPosition(row: {
       protocol,
       dex,
       strategy: row.strategy,
+      entry_signals: row.entrySignals,
     });
   }
   persist();
@@ -1247,6 +1287,8 @@ export type PositionTpSl = {
   tpSlEnabled: boolean;
   tpPercent: number | null;
   slPercent: number | null;
+  /** Needed by the multi-rule exit engine's min-duration gate and low-yield age check. */
+  openedAt: number;
 };
 
 function findPositionRow(
@@ -1294,6 +1336,7 @@ export function setPositionTpSl(
     tpSlEnabled: !!row.tp_sl_enabled,
     tpPercent: row.tp_percent ?? null,
     slPercent: row.sl_percent ?? null,
+    openedAt: row.opened_at,
   };
 }
 
@@ -1313,6 +1356,7 @@ export function getPositionTpSl(
     tpSlEnabled: !!row.tp_sl_enabled,
     tpPercent: row.tp_percent ?? null,
     slPercent: row.sl_percent ?? null,
+    openedAt: row.opened_at,
   };
 }
 
@@ -1331,7 +1375,130 @@ export function listTpSlEnrolledPositions(): PositionTpSl[] {
       tpSlEnabled: true,
       tpPercent: p.tp_percent ?? null,
       slPercent: p.sl_percent ?? null,
+      openedAt: p.opened_at,
     }));
+}
+
+/**
+ * Multi-rule exit-engine state (src/strategy/exitRules.ts) — persisted per
+ * position so peak PnL / max drawdown / trailing-armed / out-of-range-since
+ * survive a bot restart, exactly like every other position field. Absent
+ * fields default to "fresh" (see exitRules.ts's defaultExitState) — a
+ * position that predates this feature is treated as never-ticked, not as
+ * having some fabricated history.
+ */
+export type PositionExitState = {
+  peakPnlPct: number | null;
+  maxDrawdownPct: number | null;
+  trailingActive: boolean;
+  outOfRangeSinceMs: number | null;
+};
+
+export function getPositionExitState(
+  chainId: SupportedChainId | null,
+  tokenId: string,
+): PositionExitState {
+  const row = findPositionRow(chainId, tokenId);
+  return {
+    peakPnlPct: row?.exit_peak_pnl_pct ?? null,
+    maxDrawdownPct: row?.exit_max_drawdown_pct ?? null,
+    trailingActive: !!row?.exit_trailing_active,
+    outOfRangeSinceMs: row?.exit_out_of_range_since ?? null,
+  };
+}
+
+export function setPositionExitState(
+  chainId: SupportedChainId | null,
+  tokenId: string,
+  state: PositionExitState,
+): void {
+  const row = findPositionRow(chainId, tokenId);
+  if (!row) return;
+  row.exit_peak_pnl_pct = state.peakPnlPct;
+  row.exit_max_drawdown_pct = state.maxDrawdownPct;
+  row.exit_trailing_active = state.trailingActive;
+  row.exit_out_of_range_since = state.outOfRangeSinceMs;
+  persist();
+}
+
+/**
+ * One closed position's entry-signal snapshot + realized USD outcome, for
+ * src/strategy/signalWeights.ts's recalculateWeights. realizedUsd =
+ * withdrawal + fee_claim − deposit, summed across this position's whole
+ * ledger — the actual net dollar result, not an estimate. Positions with
+ * no entry_signals (manual mints, or mints from before this feature)
+ * contribute nothing — never a fabricated all-zero signal snapshot.
+ */
+export function getSignalPerformanceHistory(
+  chainId?: SupportedChainId,
+): { signals: Record<string, number>; realizedUsd: number; closedAt: number }[] {
+  const s = load();
+  const out: { signals: Record<string, number>; realizedUsd: number; closedAt: number }[] = [];
+  for (const p of s.positions) {
+    if (p.status !== 'closed' || p.closed_at == null) continue;
+    if (chainId != null && p.chain_id !== chainId) continue;
+    if (!p.entry_signals) continue;
+    const entries = s.ledger.filter((l) => l.chain_id === p.chain_id && l.token_id === p.token_id);
+    let realizedUsd = 0;
+    for (const e of entries) {
+      if (e.kind === 'deposit') realizedUsd -= e.usd;
+      else realizedUsd += e.usd; // withdrawal + fee_claim
+    }
+    out.push({ signals: p.entry_signals, realizedUsd, closedAt: p.closed_at });
+  }
+  return out;
+}
+
+export function getTunedSignalWeights(): Record<string, number> | null {
+  return load().tuned_signal_weights ?? null;
+}
+
+export function setTunedSignalWeights(weights: Record<string, number>): void {
+  const s = load();
+  s.tuned_signal_weights = weights;
+  s.tuned_signal_weights_updated_at = Date.now();
+  persist();
+}
+
+const MAX_LESSONS = 50;
+
+/** Appends one lesson, dropping the oldest once MAX_LESSONS is exceeded. */
+export function appendLesson(lesson: Omit<LessonRow, 'id' | 'createdAt'>): LessonRow {
+  const s = load();
+  const row: LessonRow = { ...lesson, id: `lesson_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, createdAt: Date.now() };
+  const list = s.lessons ?? [];
+  list.push(row);
+  s.lessons = list.length > MAX_LESSONS ? list.slice(list.length - MAX_LESSONS) : list;
+  persist();
+  return row;
+}
+
+export function getRecentLessons(limit = 10, chainId?: SupportedChainId): LessonRow[] {
+  const s = load();
+  const list = (s.lessons ?? []).filter((l) => chainId == null || l.chainId === chainId);
+  return list.slice(-limit).reverse(); // most recent first
+}
+
+/**
+ * One closed position's entry signals + close outcome, for
+ * src/agent/lessons.ts's LLM reflection prompt. Returns null when the
+ * position isn't found or has no recorded entry_signals (manual mints) —
+ * never fabricates a snapshot.
+ */
+export function getPositionCloseContext(
+  chainId: SupportedChainId,
+  tokenId: string,
+): { entrySignals: Record<string, number>; realizedUsd: number; token0: string; token1: string } | null {
+  const s = load();
+  const row = s.positions.find((p) => p.chain_id === chainId && p.token_id === tokenId);
+  if (!row || !row.entry_signals) return null;
+  const entries = s.ledger.filter((l) => l.chain_id === chainId && l.token_id === tokenId);
+  let realizedUsd = 0;
+  for (const e of entries) {
+    if (e.kind === 'deposit') realizedUsd -= e.usd;
+    else realizedUsd += e.usd;
+  }
+  return { entrySignals: row.entry_signals, realizedUsd, token0: row.token0, token1: row.token1 };
 }
 
 /** Any user prefs with experimental watcher on (for defaults + notify). */

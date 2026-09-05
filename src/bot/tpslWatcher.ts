@@ -10,20 +10,30 @@ import type { Bot } from 'grammy';
 import { config, CHAINS, type SupportedChainId, isSupportedChainId } from '../config.js';
 import {
   DEFAULT_PREFS,
+  getPositionExitState,
   listPrefsWithTpSlEnabled,
   listTpSlEnrolledPositions,
   markClosed,
   recordLedger,
   setJournalAccountingMeta,
+  setPositionExitState,
   setPositionTpSl,
   type JournalAccountingMeta,
+  type PositionExitState,
   type PositionTpSl,
 } from '../db/index.js';
 import { closePosition } from '../chain/close.js';
 import { formatPositionLine, getPosition } from '../chain/positions.js';
 import { computePositionPnl } from '../pnl/compute.js';
 import { formatUsd } from '../price/dexscreener.js';
-import { classify, type TriggerKind } from './tpslLogic.js';
+import { classify } from './tpslLogic.js';
+import {
+  CLOSE_RULE_LABELS,
+  getDeterministicCloseRule,
+  resolveExitConfig,
+  updateTrailingState,
+  type CloseRule,
+} from '../strategy/exitRules.js';
 import {
   closeLockKey,
   isCloseLocked,
@@ -50,7 +60,7 @@ const SHUTDOWN_DEADLINE_MS = 15_000;
 
 type Pending = {
   key: string;
-  kind: TriggerKind;
+  kind: CloseRule;
   pnlPct: number;
   at: number;
 };
@@ -92,6 +102,7 @@ type TpslDeps = {
     tokenId: string,
     protocol: 'v3' | 'v4',
     dex?: import('../config.js').DexId,
+    openedAt?: number,
   ) => Promise<MeasureResult>;
   closePosition: typeof closePosition;
 };
@@ -120,6 +131,57 @@ function resolveLevels(
   return { tp, sl };
 }
 
+/**
+ * The single evaluation point for the full 7-rule exit engine
+ * (src/strategy/exitRules.ts) — used by both tick() (arm) and
+ * recheckAndMaybeClose() (confirm) so the two can never drift into
+ * evaluating different logic. UNKNOWN pnlPct (null/non-finite) never
+ * reaches the engine at all — same fail-closed contract classify() always
+ * had. Persists updated trailing/drawdown/out-of-range state as a side
+ * effect on every call, exactly like the old code updated `pending` as a
+ * side effect of tick().
+ */
+function evaluateCloseRule(
+  chainId: SupportedChainId,
+  p: PositionTpSl,
+  m: Extract<MeasureResult, { status: 'active' }>,
+): CloseRule | null {
+  if (m.pnlPct == null || !Number.isFinite(m.pnlPct)) return null;
+  const { tp, sl } = resolveLevels(p);
+  const exitConfig = resolveExitConfig(tp, sl);
+
+  let state: PositionExitState = getPositionExitState(chainId, p.tokenId);
+  state = updateTrailingState(state, m.pnlPct, exitConfig);
+
+  const inRange = m.inRange ?? true;
+  if (inRange) {
+    state = { ...state, outOfRangeSinceMs: null };
+  } else if (state.outOfRangeSinceMs == null) {
+    state = { ...state, outOfRangeSinceMs: Date.now() };
+  }
+  setPositionExitState(chainId, p.tokenId, state);
+
+  const minutesOutOfRange =
+    state.outOfRangeSinceMs != null ? (Date.now() - state.outOfRangeSinceMs) / 60_000 : 0;
+  // Missing age (e.g. an old position row from before this field existed,
+  // or a test mock that doesn't care about the age gate) defaults to
+  // "mature" — never suppresses TP/SL for a position this codebase simply
+  // doesn't know the age of, matching this file's pre-existing behavior
+  // (which never gated on age at all).
+  const ageMinutes = m.ageMinutes ?? Number.POSITIVE_INFINITY;
+
+  return getDeterministicCloseRule({
+    pnlPct: m.pnlPct,
+    ageMinutes,
+    inRange,
+    ticksAboveUpper: m.ticksAboveUpper ?? 0,
+    feeValueRatio: m.feeValueRatio ?? null,
+    minutesOutOfRange,
+    state,
+    config: exitConfig,
+  });
+}
+
 async function notifyAll(bot: Bot, text: string): Promise<void> {
   const ids = [...config.allowedUserIds];
   for (const uid of ids) {
@@ -134,7 +196,17 @@ async function notifyAll(bot: Bot, text: string): Promise<void> {
 }
 
 export type MeasureResult =
-  | { status: 'active'; pnlPct: number | null; pnlUsd: number; label: string }
+  | {
+      status: 'active';
+      pnlPct: number | null;
+      pnlUsd: number;
+      label: string;
+      /** Optional — real measurePnl always provides these; test mocks may omit them, defaulted at the call site so pre-existing tests keep their exact old behavior. */
+      inRange?: boolean;
+      ticksAboveUpper?: number;
+      feeValueRatio?: number | null;
+      ageMinutes?: number;
+    }
   | { status: 'gone' }
   | { status: 'unknown'; reason: string };
 
@@ -150,6 +222,7 @@ async function measurePnl(
   tokenId: string,
   protocol: 'v3' | 'v4',
   dex: import('../config.js').DexId = 'uniswap',
+  openedAt?: number,
 ): Promise<MeasureResult> {
   let live: Awaited<ReturnType<typeof getPosition>>;
   try {
@@ -178,7 +251,32 @@ async function measurePnl(
             ? live.symbol1
             : `#${tokenId}`
         : `#${tokenId}`;
-    return { status: 'active', pnlPct: pnl.pnlPct, pnlUsd: pnl.pnlUsd, label };
+    // ticksAboveUpper: how far the current tick sits past tickUpper — 0 or
+    // negative when the position isn't pumped past its own top (in range,
+    // or out of range on the DOWN side, are both <= 0 here; only used by
+    // the "pumped above range" rule, which only ever fires on a strictly
+    // positive value).
+    const ticksAboveUpper = live.currentTick - live.tickUpper;
+    // feeValueRatio: fees earned so far as a fraction of current position
+    // value — a self-contained proxy for "yield efficiency" that needs no
+    // extra pool-TVL fetch (this codebase already computes valueUsd from
+    // live on-chain amounts, unlike meridian-rs's fee/pool-TVL-24h, which
+    // needs a separate pool stats call this codebase doesn't otherwise make
+    // per TP/SL tick). Null (never 0) when valueUsd is 0 or price data was
+    // incomplete — never divide-by-zero, never coerce unknown to "bad".
+    const feeValueRatio =
+      live.priceComplete && live.valueUsd > 0 ? live.unclaimedFeesUsd / live.valueUsd : null;
+    const ageMinutes = openedAt != null ? (Date.now() - openedAt) / 60_000 : undefined;
+    return {
+      status: 'active',
+      pnlPct: pnl.pnlPct,
+      pnlUsd: pnl.pnlUsd,
+      label,
+      inRange: live.inRange,
+      ticksAboveUpper,
+      feeValueRatio,
+      ageMinutes,
+    };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`[tpsl] measure ${chainId}:${tokenId} — pnl compute failed:`, reason);
@@ -189,7 +287,7 @@ async function measurePnl(
 async function executeClose(
   bot: Bot,
   p: PositionTpSl,
-  kind: TriggerKind,
+  kind: CloseRule,
   pnlPct: number,
   pnlUsd: number,
   label: string,
@@ -206,8 +304,8 @@ async function executeClose(
 
     await notifyAll(
       bot,
-      `🔒 TP/SL confirmed — closing ${label} #${p.tokenId} [${p.protocol}]\n` +
-        `${kind.toUpperCase()} · PnL ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${formatUsd(pnlUsd)})`,
+      `🔒 Exit confirmed — closing ${label} #${p.tokenId} [${p.protocol}]\n` +
+        `${CLOSE_RULE_LABELS[kind]} · PnL ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${formatUsd(pnlUsd)})`,
     );
 
     const result = await deps.closePosition(
@@ -265,9 +363,38 @@ async function executeClose(
     markClosed(chainId, p.tokenId);
     setPositionTpSl(chainId, p.tokenId, { enabled: false });
 
+    // Best-effort self-tuning recalculation (src/strategy/signalWeights.ts)
+    // — telemetry-driven, never on the critical path of a close. A failure
+    // here must never surface as a close failure to the operator.
+    try {
+      const { recalculateAndPersistWeights } = await import('../strategy/signalWeights.js');
+      await recalculateAndPersistWeights(chainId);
+    } catch (e) {
+      console.warn('[tpsl] signal weight recalculation failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+
+    // Best-effort LLM lesson (src/agent/lessons.ts) — silently skipped when
+    // AGENT_MODE is off or no API key is set (generateLessonForClose
+    // already no-ops on a null llm; the try/catch here only guards against
+    // an unexpected throw from constructing the client itself).
+    try {
+      const { getAgentMode, loadAgentConfig } = await import('../agent/config.js');
+      if (getAgentMode() === 'on') {
+        const agentConfig = loadAgentConfig();
+        if (agentConfig.apiKey) {
+          const { createAnthropicClient } = await import('../agent/llmClient.js');
+          const { generateLessonForClose } = await import('../agent/lessons.js');
+          const llm = createAnthropicClient(agentConfig.apiKey, agentConfig.model);
+          await generateLessonForClose(chainId, p.tokenId, kind, { llm });
+        }
+      }
+    } catch (e) {
+      console.warn('[tpsl] lesson generation failed (non-fatal):', e instanceof Error ? e.message : e);
+    }
+
     await notifyAll(
       bot,
-      `✅ TP/SL closed ${label} #${p.tokenId} [${kind.toUpperCase()}]\n` +
+      `✅ Position closed ${label} #${p.tokenId} [${CLOSE_RULE_LABELS[kind]}]\n` +
         `Received ~${result.amount0Human.toFixed(6)} ${result.symbol0} + ` +
         `${result.amount1Human.toFixed(6)} ${result.symbol1}\n` +
         `~${formatUsd(result.withdrawalUsd)}\n` +
@@ -319,7 +446,7 @@ async function tick(bot: Bot): Promise<void> {
         if (isCloseLocked(closeLockKey(p.chainId, p.tokenId))) continue;
 
         const { tp, sl } = resolveLevels(p);
-        const m = await deps.measurePnl(chainId, p.tokenId, p.protocol, p.dex ?? 'uniswap');
+        const m = await deps.measurePnl(chainId, p.tokenId, p.protocol, p.dex ?? 'uniswap', p.openedAt);
         if (m.status === 'gone') {
           // Confirmed gone (verified ownership/empty) — safe to unenroll
           setPositionTpSl(chainId, p.tokenId, { enabled: false });
@@ -332,7 +459,7 @@ async function tick(bot: Bot): Promise<void> {
           continue;
         }
 
-        const hit = classify(m.pnlPct, tp, sl);
+        const hit = evaluateCloseRule(chainId, p, m);
         const pend = pending.get(key);
 
         if (!hit) {
@@ -362,7 +489,7 @@ async function tick(bot: Bot): Promise<void> {
           );
           await notifyAll(
             bot,
-            `⚠️ TP/SL trigger (${hit.toUpperCase()}) — rechecking in 5s\n` +
+            `⚠️ Exit trigger (${CLOSE_RULE_LABELS[hit]}) — rechecking in 5s\n` +
               `${m.label} #${p.tokenId} [${p.protocol}] · ${CHAINS[chainId].name}\n` +
               `PnL ${m.pnlPct != null ? `${m.pnlPct >= 0 ? '+' : ''}${m.pnlPct.toFixed(2)}%` : 'n/a'} ` +
               `(${formatUsd(m.pnlUsd)})\n` +
@@ -395,7 +522,7 @@ async function tick(bot: Bot): Promise<void> {
 async function recheckAndMaybeClose(
   bot: Bot,
   p: PositionTpSl,
-  expected: TriggerKind,
+  expected: CloseRule,
   tp: number,
   sl: number,
 ): Promise<void> {
@@ -426,7 +553,7 @@ async function recheckAndMaybeClose(
   }
 
   const chainId = p.chainId as SupportedChainId;
-  const m = await deps.measurePnl(chainId, p.tokenId, p.protocol, p.dex ?? 'uniswap');
+  const m = await deps.measurePnl(chainId, p.tokenId, p.protocol, p.dex ?? 'uniswap', p.openedAt);
   if (m.status === 'gone') {
     pending.delete(key);
     setPositionTpSl(chainId, p.tokenId, { enabled: false });
@@ -440,7 +567,7 @@ async function recheckAndMaybeClose(
     return;
   }
 
-  const hit = classify(m.pnlPct, tp, sl);
+  const hit = evaluateCloseRule(chainId, p, m);
   if (hit !== expected) {
     pending.delete(key);
     console.log(
@@ -448,7 +575,7 @@ async function recheckAndMaybeClose(
     );
     await notifyAll(
       bot,
-      `↩️ TP/SL not confirmed for ${m.label} #${p.tokenId}\n` +
+      `↩️ Exit not confirmed for ${m.label} #${p.tokenId}\n` +
         `After 5s PnL is ${m.pnlPct != null ? `${m.pnlPct >= 0 ? '+' : ''}${m.pnlPct.toFixed(2)}%` : 'n/a'} — still watching`,
     );
     return;

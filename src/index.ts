@@ -10,6 +10,8 @@ import {
 } from './bot/volumeAlertWatcher.js';
 import { recoverMissingLedger } from './pnl/reconcile.js';
 import { assertValidStrategyEnv, loadMultiConfig, validateMultiConfig } from './strategy/index.js';
+import { assertValidAgentModeEnv, getAgentMode, loadAgentConfig } from './agent/config.js';
+import { startAgentScheduler, stopAgentScheduler } from './agent/scheduler.js';
 import { acquireInstanceLock, defaultLockPath, releaseInstanceLock } from './instanceLock.js';
 import { resolveHealthPort, setLifecycleState, startHealthServer, stopHealthServer } from './health.js';
 import { registerFatalErrorHandlers } from './fatalError.js';
@@ -52,6 +54,22 @@ async function main() {
   // active mode is always visible in startup logs, not just when staging.
   assertValidTradingModeEnv();
   console.log(`[startup] TRADING_MODE=${getTradingMode()}${getTradingMode() === 'staging' ? ' — all transaction broadcasts will be refused at the journalledSend choke point' : ''}`);
+
+  // Same fail-closed startup validation as STRATEGY/TRADING_MODE above — a
+  // typo'd AGENT_MODE must never be silently absorbed into 'off' (or worse,
+  // 'on'). AGENT_MODE=on with no ANTHROPIC_API_KEY is intentionally NOT a
+  // startup failure here (mirrors GMGN's own "missing key → clear runtime
+  // error, bot still starts" pattern) — /agent itself refuses clearly per
+  // invocation instead, so a key added later works without a restart-time
+  // dependency ordering requirement.
+  assertValidAgentModeEnv();
+  if (getAgentMode() === 'on') {
+    const agentConfig = loadAgentConfig();
+    console.log(
+      `[startup] AGENT_MODE=on — model=${agentConfig.model}, maxSteps=${agentConfig.maxSteps}, ` +
+        `maxActionsPerRun=${agentConfig.maxActionsPerRun}${agentConfig.apiKey ? '' : ' — WARNING: ANTHROPIC_API_KEY not set, /agent will refuse until it is'}`,
+    );
+  }
 
   // Phase 4.6.1 (P1-2): claim exclusive ownership of this wallet/dbPath
   // BEFORE any transaction-capable service (db load, wallet client, bot,
@@ -199,6 +217,7 @@ async function main() {
       { command: 'generate', description: 'PnL card image · /generate #id' },
       { command: 'reconcile', description: 'Accounting reconciliation check (operator)' },
       { command: 'multi', description: 'MULTI strategy candidates (dry-run) · execute' },
+      { command: 'agent', description: 'Autonomous LLM agent (AGENT_MODE=on) · screener|manager' },
       { command: 'tp', description: 'TP/SL enroll · /tp #id [tp sl|off|list]' },
       { command: 'add', description: 'Mint LP (paste CA → pick pool)' },
       { command: 'cancel', description: 'Cancel current flow' },
@@ -212,6 +231,11 @@ async function main() {
   startTpslWatcher(bot);
   // 5m volume spike alerts (60s poll)
   startVolumeAlertWatcher(bot);
+  // Autonomous agent scheduler — no-ops entirely unless AGENT_MODE=on AND
+  // AGENT_AUTONOMOUS_SCHEDULE=on are BOTH explicitly set (see
+  // agent/config.ts's doc comment on why this is a separate opt-in from
+  // AGENT_MODE, which only gates the manual /agent command).
+  startAgentScheduler(bot);
 
   bot.start({
     allowed_updates: ['message', 'callback_query'],
@@ -247,6 +271,7 @@ async function main() {
     setLifecycleState('stopping');
     await stopTpslWatcher();
     stopVolumeAlertWatcher();
+    stopAgentScheduler();
     bot.stop();
     releaseInstanceLock(lockPath);
     setLifecycleState('stopped');
@@ -256,6 +281,7 @@ async function main() {
     setLifecycleState('stopping');
     await stopTpslWatcher();
     stopVolumeAlertWatcher();
+    stopAgentScheduler();
     bot.stop();
     releaseInstanceLock(lockPath);
     setLifecycleState('stopped');
