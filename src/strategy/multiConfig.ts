@@ -295,7 +295,7 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     chainId: resolvedChainId,
     interval: resolveCandidateInterval(),
     minMarketCapUsd: envNum('MULTI_MIN_MARKET_CAP_USD', 1_000_000),
-    minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 24),
+    minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 4),
     minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 200_000),
     minKolCount: envNum('MULTI_MIN_KOL_COUNT', 5),
     topN: Math.round(envNum('MULTI_TOP_N', 10)),
