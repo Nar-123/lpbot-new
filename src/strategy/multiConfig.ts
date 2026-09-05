@@ -69,12 +69,12 @@ export type MultiConfig = {
   minCandidateVolumeUsd: number;
   /**
    * Operator-chosen floor on candidate.kolCount (GMGN's renowned_count —
-   * see multiCandidates.ts). Default 5, and the comparison is strictly
-   * GREATER THAN this floor (kolCount == minKolCount is rejected, not
-   * passed) — see multiCandidates.ts's KOL_COUNT_TOO_LOW check. Set
-   * MULTI_MIN_KOL_COUNT=0 explicitly to disable this floor entirely (no
-   * candidate is ever rejected on KOL grounds while it is 0, including a
-   * null/unknown kolCount).
+   * see multiCandidates.ts). Default 10, and the comparison is GREATER
+   * THAN OR EQUAL TO this floor (inclusive — kolCount == minKolCount
+   * PASSES, matching the field's own name) — see multiCandidates.ts's
+   * KOL_COUNT_TOO_LOW check. Set MULTI_MIN_KOL_COUNT=0 explicitly to
+   * disable this floor entirely (no candidate is ever rejected on KOL
+   * grounds while it is 0, including a null/unknown kolCount).
    */
   minKolCount: number;
   topN: number;
@@ -297,7 +297,7 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     minMarketCapUsd: envNum('MULTI_MIN_MARKET_CAP_USD', 1_000_000),
     minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 4),
     minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 200_000),
-    minKolCount: envNum('MULTI_MIN_KOL_COUNT', 5),
+    minKolCount: envNum('MULTI_MIN_KOL_COUNT', 10),
     topN: Math.round(envNum('MULTI_TOP_N', 10)),
     rangePercent,
     rangePreset,

@@ -1,13 +1,14 @@
 /**
  * MULTI_MIN_KOL_COUNT config wiring — mirrors
  * strategy.multiConfig.minVolume.test.ts's coverage style, but the
- * semantics differ from minCandidateVolumeUsd: default is 5 (not 0/off),
- * and the comparison is strictly GREATER THAN the floor — a candidate
- * whose kolCount equals minKolCount is rejected, not passed. Set
- * MULTI_MIN_KOL_COUNT=0 explicitly to disable this floor entirely.
+ * semantics differ from minCandidateVolumeUsd: default is 10 (not 0/off),
+ * and the comparison is GREATER THAN OR EQUAL TO the floor (inclusive) —
+ * a candidate whose kolCount equals minKolCount PASSES, matching the
+ * field's own name ("minimum"). Set MULTI_MIN_KOL_COUNT=0 explicitly to
+ * disable this floor entirely.
  *
  * The filter's actual pipeline behavior (KOL_COUNT_UNKNOWN/
- * KOL_COUNT_TOO_LOW, boundary exclusivity) lives in
+ * KOL_COUNT_TOO_LOW, boundary inclusivity) lives in
  * strategy.multiCandidates.test.ts — this suite only covers env
  * parsing/validation/the documented default.
  */
@@ -25,28 +26,30 @@ function clearEnv(): void {
   delete process.env.MULTI_MIN_KOL_COUNT;
 }
 
-test('MULTI_MIN_KOL_COUNT defaults to 5 when unset', () => {
+test('MULTI_MIN_KOL_COUNT defaults to 10 when unset', () => {
   clearEnv();
   const cfg = loadMultiConfig(CHAIN);
-  assert.equal(cfg.minKolCount, 5);
+  assert.equal(cfg.minKolCount, 10);
   assert.equal(cfg.enabled, true);
 });
 
 test('a valid positive MULTI_MIN_KOL_COUNT is honored', () => {
-  process.env.MULTI_MIN_KOL_COUNT = '10';
+  // Deliberately distinct from the 10 default, so a broken env-parse that
+  // silently fell through to the fallback would NOT coincidentally match.
+  process.env.MULTI_MIN_KOL_COUNT = '15';
   try {
     const cfg = loadMultiConfig(CHAIN);
-    assert.equal(cfg.minKolCount, 10);
+    assert.equal(cfg.minKolCount, 15);
   } finally {
     clearEnv();
   }
 });
 
-test('a malformed (non-numeric) MULTI_MIN_KOL_COUNT falls back to the 5 default, never NaN', () => {
+test('a malformed (non-numeric) MULTI_MIN_KOL_COUNT falls back to the 10 default, never NaN', () => {
   process.env.MULTI_MIN_KOL_COUNT = 'not-a-number';
   try {
     const cfg = loadMultiConfig(CHAIN);
-    assert.equal(cfg.minKolCount, 5);
+    assert.equal(cfg.minKolCount, 10);
     assert.equal(Number.isFinite(cfg.minKolCount), true);
   } finally {
     clearEnv();
@@ -66,7 +69,7 @@ test('a negative MULTI_MIN_KOL_COUNT fails validateMultiConfig — MULTI disable
   }
 });
 
-test('MULTI_MIN_KOL_COUNT=0 explicitly disables the floor (distinct from the 5 default — an explicit opt-out, not "same as unset")', () => {
+test('MULTI_MIN_KOL_COUNT=0 explicitly disables the floor (distinct from the 10 default — an explicit opt-out, not "same as unset")', () => {
   process.env.MULTI_MIN_KOL_COUNT = '0';
   try {
     const cfg = loadMultiConfig(CHAIN);

@@ -167,15 +167,16 @@ export async function fetchAndFilterCandidates(
     // the raw GMGN trending payload (no secondary per-token info lookup
     // needed), so it belongs in this first-pass group over the raw
     // candidate rather than the separate post-lookup loop. Comparison is
-    // strictly GREATER THAN the floor — kolCount == minKolCount is
-    // rejected, not passed (e.g. the default floor of 5 rejects a
-    // kolCount of exactly 5; 6 is required to pass).
+    // GREATER THAN OR EQUAL TO the floor (inclusive) — kolCount ==
+    // minKolCount PASSES, matching the field's own name ("minimum"), e.g.
+    // the default floor of 10 passes a kolCount of exactly 10; 9 is
+    // rejected.
     if (config.minKolCount > 0) {
       if (candidate.kolCount == null) {
         rejected.push(rejectWith(candidate, 'KOL_COUNT_UNKNOWN'));
         continue;
       }
-      if (candidate.kolCount <= config.minKolCount) {
+      if (candidate.kolCount < config.minKolCount) {
         rejected.push(rejectWith(candidate, 'KOL_COUNT_TOO_LOW'));
         continue;
       }

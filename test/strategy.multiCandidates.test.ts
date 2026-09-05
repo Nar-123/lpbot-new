@@ -450,9 +450,21 @@ test('MULTI_MIN_KOL_COUNT=10: a candidate with kolCount=null (unknown) fails clo
   assert.equal(rejected[0].rejectedReason, 'KOL_COUNT_UNKNOWN');
 });
 
-test('MULTI_MIN_KOL_COUNT=10: kolCount exactly at the floor is rejected (boundary is exclusive — strictly greater than required)', async () => {
+test('MULTI_MIN_KOL_COUNT=10: kolCount exactly at the floor passes (boundary is inclusive — minimum, not "strictly greater than")', async () => {
   const cfg = baseConfig({ minKolCount: 10 });
   const t = token({ address: '0xaaa', renowned_count: 10 });
+  const { candidates, rejected } = await fetchAndFilterCandidates(cfg, {
+    fetcher: async () => [t],
+    infoFetcher: async () => infoAtAge(48),
+    now: NOW,
+  });
+  assert.equal(rejected.length, 0);
+  assert.equal(candidates.length, 1);
+});
+
+test('MULTI_MIN_KOL_COUNT=10: kolCount one below the floor (9) is rejected KOL_COUNT_TOO_LOW', async () => {
+  const cfg = baseConfig({ minKolCount: 10 });
+  const t = token({ address: '0xaaa', renowned_count: 9 });
   const { candidates, rejected } = await fetchAndFilterCandidates(cfg, {
     fetcher: async () => [t],
     infoFetcher: async () => infoAtAge(48),
@@ -474,11 +486,11 @@ test('MULTI_MIN_KOL_COUNT=10: kolCount one above the floor (11) passes', async (
   assert.equal(candidates.length, 1);
 });
 
-test('default floor of 5: kolCount=5 is rejected KOL_COUNT_TOO_LOW, kolCount=6 passes (matches the operator-specified example exactly)', async () => {
-  const cfg = baseConfig({ minKolCount: 5 });
+test('default floor of 10: kolCount=9 is rejected KOL_COUNT_TOO_LOW, kolCount=10 passes (matches the operator-specified example exactly)', async () => {
+  const cfg = baseConfig({ minKolCount: 10 });
 
   const rejectedResult = await fetchAndFilterCandidates(cfg, {
-    fetcher: async () => [token({ address: '0xaaa', renowned_count: 5 })],
+    fetcher: async () => [token({ address: '0xaaa', renowned_count: 9 })],
     infoFetcher: async () => infoAtAge(48),
     now: NOW,
   });
@@ -486,7 +498,7 @@ test('default floor of 5: kolCount=5 is rejected KOL_COUNT_TOO_LOW, kolCount=6 p
   assert.equal(rejectedResult.rejected[0].rejectedReason, 'KOL_COUNT_TOO_LOW');
 
   const passedResult = await fetchAndFilterCandidates(cfg, {
-    fetcher: async () => [token({ address: '0xbbb', renowned_count: 6 })],
+    fetcher: async () => [token({ address: '0xbbb', renowned_count: 10 })],
     infoFetcher: async () => infoAtAge(48),
     now: NOW,
   });
