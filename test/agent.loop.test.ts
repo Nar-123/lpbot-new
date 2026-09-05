@@ -124,7 +124,7 @@ test('enforces the capital-moving action budget independently of maxSteps — re
           chainId: CHAIN,
           marketCapUsd: 5_000_000,
           ageHours: 48,
-          volume6hUsd: 100_000,
+          volumeUsd: 100_000,
           liquidityUsd: 50_000,
           classification: 'MEME',
           launchpadPlatform: 'pump',

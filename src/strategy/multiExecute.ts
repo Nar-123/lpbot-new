@@ -104,17 +104,17 @@ function rejectCandidate(candidate: MultiCandidate, reason: string): RejectedCan
  *
  * 'static' (default): unconditionally config.rangePercent — byte-for-byte
  * the same behavior as before rangeMode existed.
- * 'volume_tiered': candidate.volume6hUsd >= rangeTierVolumeUsd (inclusive)
+ * 'volume_tiered': candidate.volumeUsd >= rangeTierVolumeUsd (inclusive)
  * uses rangeTierHighPercent; anything below uses rangeTierLowPercent.
  */
 export function resolveRangePercentForCandidate(candidate: MultiCandidate, config: MultiConfig): number {
   if (config.rangeMode !== 'volume_tiered') return config.rangePercent;
   // Non-null assertion: every candidate reaching this function already
   // passed multiCandidates.ts's mandatory VOLUME_UNKNOWN/VOLUME_NON_POSITIVE
-  // checks, so volume6hUsd is guaranteed a real positive number here —
+  // checks, so volumeUsd is guaranteed a real positive number here —
   // the `| null` in MultiCandidate's own type exists for the pre-filter
   // raw-candidate stage, not this post-filter one.
-  return candidate.volume6hUsd! >= config.rangeTierVolumeUsd
+  return candidate.volumeUsd! >= config.rangeTierVolumeUsd
     ? config.rangeTierHighPercent
     : config.rangeTierLowPercent;
 }
@@ -329,7 +329,7 @@ export async function executeTradeIntent(params: {
     strategy: 'multi',
     entrySignals: {
       marketCapUsd: candidate.marketCapUsd ?? 0,
-      volume6hUsd: candidate.volume6hUsd ?? 0,
+      volumeUsd: candidate.volumeUsd ?? 0,
       ageHours: candidate.ageHours ?? 0,
       poolTvlUsd: intent.pool.tvlUsd ?? 0,
       poolVolumeUsd: intent.pool.volumeUsd ?? 0,
@@ -392,7 +392,7 @@ export async function executeTradeIntent(params: {
     candidateInterval: '6h',
     candidateMarketCapUsd: candidate.marketCapUsd,
     candidateAgeHours: candidate.ageHours,
-    candidateVolume6hUsd: candidate.volume6hUsd,
+    candidateVolumeUsd: candidate.volumeUsd,
     candidateClassification: candidate.classification,
     candidateScore: candidate.candidateScore,
     poolAddress: String(result.poolAddress),

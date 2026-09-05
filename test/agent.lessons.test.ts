@@ -52,7 +52,7 @@ function openMultiPosition(tokenId: string): void {
     protocol: 'v3',
     dex: 'uniswap',
     strategy: 'multi',
-    entrySignals: { marketCapUsd: 5_000_000, volume6hUsd: 100_000, ageHours: 48 },
+    entrySignals: { marketCapUsd: 5_000_000, volumeUsd: 100_000, ageHours: 48 },
   });
 }
 

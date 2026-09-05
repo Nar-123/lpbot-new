@@ -5961,7 +5961,7 @@ function formatMultiCandidateLine(intent: TradeIntent, candidate?: MultiCandidat
   const label = candidate ? candidate.symbol : intent.token.slice(0, 10);
   const mc = candidate?.marketCapUsd != null ? formatUsd(candidate.marketCapUsd) : 'UNKNOWN';
   const age = candidate?.ageHours != null ? `${candidate.ageHours.toFixed(1)}h` : 'UNKNOWN';
-  const vol = candidate?.volume6hUsd != null ? formatUsd(candidate.volume6hUsd) : 'UNKNOWN';
+  const vol = candidate?.volumeUsd != null ? formatUsd(candidate.volumeUsd) : 'UNKNOWN';
   return (
     `• ${label} — MC ${mc} · age ${age} · vol6h ${vol}\n` +
     `  pool ${String(intent.pool.poolAddress).slice(0, 10)}… fee=${intent.fee}bps · candScore=${intent.candidateScore.toFixed(3)} poolScore=${intent.poolScore.toFixed(3)}\n` +

@@ -81,7 +81,7 @@ function seedCanaryRecords(wrongTokenId: string): number {
     candidateInterval: '6h',
     candidateMarketCapUsd: 641240000,
     candidateAgeHours: 1256.47596,
-    candidateVolume6hUsd: 40385100,
+    candidateVolumeUsd: 40385100,
     candidateClassification: 'MEME',
     candidateScore: 1,
     poolAddress: POOL,

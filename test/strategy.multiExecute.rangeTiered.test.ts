@@ -13,7 +13,7 @@ import { resolveRangePercentForCandidate } from '../src/strategy/multiExecute.js
 import type { MultiCandidate } from '../src/strategy/types.js';
 import type { MultiConfig } from '../src/strategy/multiConfig.js';
 
-function candidateWithVolume(volume6hUsd: number): MultiCandidate {
+function candidateWithVolume(volumeUsd: number): MultiCandidate {
   return {
     address: '0xaaa',
     symbol: 'TOK',
@@ -21,7 +21,7 @@ function candidateWithVolume(volume6hUsd: number): MultiCandidate {
     chainId: 4663,
     marketCapUsd: 2_000_000,
     ageHours: 48,
-    volume6hUsd,
+    volumeUsd,
     liquidityUsd: 200_000,
     kolCount: 10,
     classification: 'MEME',

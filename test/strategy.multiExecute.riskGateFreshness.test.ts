@@ -129,7 +129,7 @@ function baseCandidate(address: string) {
     chainId: CHAIN,
     marketCapUsd: 2_000_000,
     ageHours: 48,
-    volume6hUsd: 500_000,
+    volumeUsd: 500_000,
     liquidityUsd: 200_000,
     kolCount: 10,
     classification: 'MEME' as const,

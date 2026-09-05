@@ -31,7 +31,7 @@ const SAMPLE_CANDIDATE: MultiCandidate = {
   chainId: CHAIN,
   marketCapUsd: 5_000_000,
   ageHours: 48,
-  volume6hUsd: 100_000,
+  volumeUsd: 100_000,
   liquidityUsd: 50_000,
   classification: 'MEME',
   launchpadPlatform: 'pump',

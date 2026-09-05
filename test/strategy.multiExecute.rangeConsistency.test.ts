@@ -88,7 +88,7 @@ function config(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function candidate(address: string, volume6hUsd: number) {
+function candidate(address: string, volumeUsd: number) {
   return {
     address,
     symbol: 'TOK',
@@ -96,7 +96,7 @@ function candidate(address: string, volume6hUsd: number) {
     chainId: CHAIN,
     marketCapUsd: 2_000_000,
     ageHours: 48,
-    volume6hUsd,
+    volumeUsd,
     liquidityUsd: 200_000,
     kolCount: 10,
     classification: 'MEME' as const,

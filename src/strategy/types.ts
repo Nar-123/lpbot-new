@@ -18,7 +18,7 @@ export type MultiCandidate = {
   chainId: SupportedChainId;
   marketCapUsd: number | null;
   ageHours: number | null;
-  volume6hUsd: number | null;
+  volumeUsd: number | null;
   liquidityUsd: number | null;
   /**
    * KOL / renowned wallet count holding this token, from GMGN's
@@ -100,7 +100,7 @@ export type MultiPositionMeta = {
   candidateInterval: '6h';
   candidateMarketCapUsd: number | null;
   candidateAgeHours: number | null;
-  candidateVolume6hUsd: number | null;
+  candidateVolumeUsd: number | null;
   candidateClassification: CandidateType;
   candidateScore: number;
   poolAddress: string;

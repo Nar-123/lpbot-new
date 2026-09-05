@@ -17,7 +17,7 @@
 
 export type SignalName =
   | 'marketCapUsd'
-  | 'volume6hUsd'
+  | 'volumeUsd'
   | 'ageHours'
   | 'poolTvlUsd'
   | 'poolVolumeUsd'
@@ -26,7 +26,7 @@ export type SignalName =
 
 export const ALL_SIGNAL_NAMES: readonly SignalName[] = [
   'marketCapUsd',
-  'volume6hUsd',
+  'volumeUsd',
   'ageHours',
   'poolTvlUsd',
   'poolVolumeUsd',

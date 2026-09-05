@@ -97,7 +97,7 @@ test('a real close (tick -> 5s confirm -> executeClose) persists a tuned-weights
     strategy: 'multi',
     entrySignals: {
       marketCapUsd: 5_000_000,
-      volume6hUsd: 100_000,
+      volumeUsd: 100_000,
       ageHours: 48,
       poolTvlUsd: 50_000,
       poolVolumeUsd: 25_000,

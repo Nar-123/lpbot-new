@@ -1422,6 +1422,27 @@ export function setPositionExitState(
 }
 
 /**
+ * SUB-FASE 3B: `volume6hUsd` was renamed to `volumeUsd` (strategy/
+ * signalWeights.ts's SignalName, strategy/types.ts's MultiCandidate) so the
+ * name doesn't lie once the GMGN candidate interval changes (a later,
+ * separate sub-phase). Records already persisted on another deployment —
+ * `entry_signals` per position, `tuned_signal_weights` — may still carry
+ * the OLD key. This is a pure READ-time shim: never mutates the stored
+ * object, never deletes the old key (harmless to leave hanging around) —
+ * it only fills in the NEW key from the old one's value when the new key
+ * is missing, so code that reads 'volumeUsd' still gets the value from
+ * old data. Called at the two read points below (getSignalPerformanceHistory,
+ * getTunedSignalWeights), never at write (recordOpenPosition/
+ * setTunedSignalWeights always write the current key name going forward).
+ */
+function migrateLegacyVolumeKey(signals: Record<string, number>): Record<string, number> {
+  if ('volume6hUsd' in signals && !('volumeUsd' in signals)) {
+    return { ...signals, volumeUsd: signals.volume6hUsd! };
+  }
+  return signals;
+}
+
+/**
  * One closed position's entry-signal snapshot + realized USD outcome, for
  * src/strategy/signalWeights.ts's recalculateWeights. realizedUsd =
  * withdrawal + fee_claim − deposit, summed across this position's whole
@@ -1444,13 +1465,14 @@ export function getSignalPerformanceHistory(
       if (e.kind === 'deposit') realizedUsd -= e.usd;
       else realizedUsd += e.usd; // withdrawal + fee_claim
     }
-    out.push({ signals: p.entry_signals, realizedUsd, closedAt: p.closed_at });
+    out.push({ signals: migrateLegacyVolumeKey(p.entry_signals), realizedUsd, closedAt: p.closed_at });
   }
   return out;
 }
 
 export function getTunedSignalWeights(): Record<string, number> | null {
-  return load().tuned_signal_weights ?? null;
+  const w = load().tuned_signal_weights;
+  return w ? migrateLegacyVolumeKey(w) : null;
 }
 
 export function setTunedSignalWeights(weights: Record<string, number>): void {

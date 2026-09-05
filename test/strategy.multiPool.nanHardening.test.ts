@@ -55,7 +55,7 @@ function candidate(): MultiCandidate {
     chainId: 4663,
     marketCapUsd: 2_000_000,
     ageHours: 48,
-    volume6hUsd: 500_000,
+    volumeUsd: 500_000,
     liquidityUsd: 200_000,
     classification: 'MEME',
     launchpadPlatform: 'pump.fun',

@@ -202,7 +202,7 @@ function makeGetCandidatesHandler(deps: ToolDeps): AgentToolHandler {
         address: c.address,
         symbolAndName: untrustedDataEnvelope({ symbol: c.symbol, name: c.name }),
         marketCapUsd: c.marketCapUsd,
-        volume6hUsd: c.volume6hUsd,
+        volumeUsd: c.volumeUsd,
         ageHours: c.ageHours,
         candidateScore: c.candidateScore,
       })),

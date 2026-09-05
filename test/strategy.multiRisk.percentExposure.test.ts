@@ -141,7 +141,7 @@ function openMultiPositionWithMeta(tokenId: string, positionSizeUsd: number): vo
     candidateInterval: '6h',
     candidateMarketCapUsd: null,
     candidateAgeHours: null,
-    candidateVolume6hUsd: null,
+    candidateVolumeUsd: null,
     candidateClassification: 'MEME',
     candidateScore: 1,
     poolAddress: '0xpool',

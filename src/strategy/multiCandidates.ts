@@ -63,7 +63,7 @@ function makeBaseCandidate(
     chainId,
     marketCapUsd: numberOrNull(raw.market_cap),
     ageHours: null,
-    volume6hUsd: numberOrNull(raw.volume),
+    volumeUsd: numberOrNull(raw.volume),
     liquidityUsd: numberOrNull(raw.liquidity),
     kolCount: numberOrNull(raw.renowned_count),
     classification: classify(raw),
@@ -80,8 +80,8 @@ function rejectWith(candidate: MultiCandidate, reason: string): RejectedCandidat
 }
 
 function compareCandidates(a: MultiCandidate, b: MultiCandidate): number {
-  const va = a.volume6hUsd ?? 0;
-  const vb = b.volume6hUsd ?? 0;
+  const va = a.volumeUsd ?? 0;
+  const vb = b.volumeUsd ?? 0;
   if (vb !== va) return vb - va;
   const la = a.liquidityUsd ?? 0;
   const lb = b.liquidityUsd ?? 0;
@@ -143,7 +143,7 @@ export async function fetchAndFilterCandidates(
     if (!t || typeof t.address !== 'string' || t.address.trim() === '') continue;
     const candidate = makeBaseCandidate(t, config.chainId, now);
 
-    if (candidate.volume6hUsd == null) {
+    if (candidate.volumeUsd == null) {
       rejected.push(rejectWith(candidate, 'VOLUME_UNKNOWN'));
       continue;
     }
@@ -153,11 +153,11 @@ export async function fetchAndFilterCandidates(
     // volume is not a risk-tolerance judgment call, it is impossible/corrupt
     // data (never coerced to a valid-but-low number), so this check is
     // always on regardless of config.minCandidateVolumeUsd.
-    if (candidate.volume6hUsd <= 0) {
+    if (candidate.volumeUsd <= 0) {
       rejected.push(rejectWith(candidate, 'VOLUME_NON_POSITIVE'));
       continue;
     }
-    if (candidate.volume6hUsd < config.minCandidateVolumeUsd) {
+    if (candidate.volumeUsd < config.minCandidateVolumeUsd) {
       rejected.push(rejectWith(candidate, 'VOLUME_TOO_LOW'));
       continue;
     }
@@ -224,7 +224,7 @@ export async function fetchAndFilterCandidates(
     ...c,
     candidateScore: ranked.length > 0 ? (ranked.length - idx) / ranked.length : 0,
     reasons: [
-      `volume6hUsd=${c.volume6hUsd}`,
+      `volumeUsd=${c.volumeUsd}`,
       `marketCapUsd=${c.marketCapUsd}`,
       `ageHours=${c.ageHours?.toFixed(2)}`,
       `classification=${c.classification}`,

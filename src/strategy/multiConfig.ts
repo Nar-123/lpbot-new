@@ -45,7 +45,7 @@ export type MultiConfig = {
   minMarketCapUsd: number;
   minTokenAgeHours: number;
   /**
-   * Operator-chosen floor (USD) on candidate.volume6hUsd, ON TOP OF the
+   * Operator-chosen floor (USD) on candidate.volumeUsd, ON TOP OF the
    * always-on, non-configurable requirement that volume be strictly
    * positive (see multiCandidates.ts's VOLUME_NON_POSITIVE check — a
    * "trending" token reporting $0 or negative 6h volume is a data-integrity
@@ -83,13 +83,13 @@ export type MultiConfig = {
    * 'static' (default, unset MULTI_RANGE_MODE): every candidate uses
    * rangePercent above, unchanged from before this option existed.
    * 'volume_tiered': the width is chosen per-candidate based on its
-   * volume6hUsd instead — see multiExecute.ts's
+   * volumeUsd instead — see multiExecute.ts's
    * resolveRangePercentForCandidate.
    */
   rangeMode: 'static' | 'volume_tiered';
   /**
    * volume_tiered mode only (ignored, and NOT validated, in 'static' mode
-   * — see validateMultiConfig): a candidate's volume6hUsd at or above this
+   * — see validateMultiConfig): a candidate's volumeUsd at or above this
    * USD threshold uses rangeTierHighPercent; below it uses
    * rangeTierLowPercent. Comparison is >=, so a candidate with volume
    * exactly equal to this threshold is HIGH-tier.
