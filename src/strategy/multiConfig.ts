@@ -59,6 +59,19 @@ export type MultiConfig = {
    * reasoned number, rather than the code inventing one "to be safer".
    */
   minCandidateVolumeUsd: number;
+  /**
+   * Optional operator-chosen floor on candidate.kolCount (GMGN's
+   * renowned_count — see multiCandidates.ts). Same contract as
+   * minCandidateVolumeUsd directly above: default 0 = disabled, no floor
+   * beyond whatever the raw candidate happens to report. There is no
+   * existing, defensible analytical basis in this codebase for hardcoding
+   * a specific minimum KOL count here either — the manual /screener
+   * command's own default (10) is an operator-facing UI convenience, not
+   * a validated trading threshold — so the operator must opt in themselves
+   * once they have a reasoned number, rather than the code inventing one
+   * "to be safer".
+   */
+  minKolCount: number;
   topN: number;
   rangePercent: number;
   rangePreset: MultiRangePreset;
@@ -223,6 +236,7 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     minMarketCapUsd: envNum('MULTI_MIN_MARKET_CAP_USD', 1_000_000),
     minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 24),
     minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 0),
+    minKolCount: envNum('MULTI_MIN_KOL_COUNT', 0),
     topN: Math.round(envNum('MULTI_TOP_N', 10)),
     rangePercent,
     rangePreset,
@@ -262,6 +276,9 @@ export function validateMultiConfig(c: MultiConfig): { valid: boolean; reason?: 
   }
   if (!(c.minCandidateVolumeUsd >= 0)) {
     return { valid: false, reason: 'MULTI_MIN_CANDIDATE_VOLUME_USD must be >= 0' };
+  }
+  if (!(c.minKolCount >= 0)) {
+    return { valid: false, reason: 'MULTI_MIN_KOL_COUNT must be >= 0' };
   }
   if (!(c.topN > 0)) {
     return { valid: false, reason: 'MULTI_TOP_N must be > 0' };

@@ -65,6 +65,7 @@ function makeBaseCandidate(
     ageHours: null,
     volume6hUsd: numberOrNull(raw.volume),
     liquidityUsd: numberOrNull(raw.liquidity),
+    kolCount: numberOrNull(raw.renowned_count),
     classification: classify(raw),
     launchpadPlatform: raw.launchpad_platform ?? null,
     candidateScore: 0,
@@ -92,9 +93,10 @@ function compareCandidates(a: MultiCandidate, b: MultiCandidate): number {
 
 /**
  * Fetches GMGN 6h trending candidates and applies the mandatory filter order:
- * data validation → market cap → token age → classification → volume ranking
- * → top N. UNKNOWN data always fails closed with an explicit reason code —
- * never coerced to 0, never allowed to pass silently.
+ * data validation → volume → KOL count → market cap → token age →
+ * classification → volume ranking → top N. UNKNOWN data always fails closed
+ * with an explicit reason code — never coerced to 0, never allowed to pass
+ * silently.
  */
 /**
  * A candidate-source failure (gmgn-cli not found, exec failed, timed out,
@@ -158,6 +160,22 @@ export async function fetchAndFilterCandidates(
     if (candidate.volume6hUsd < config.minCandidateVolumeUsd) {
       rejected.push(rejectWith(candidate, 'VOLUME_TOO_LOW'));
       continue;
+    }
+    // KOL/renowned-wallet-count floor — opt-in, default 0 (disabled), same
+    // contract as minCandidateVolumeUsd above. Placed here rather than with
+    // the age filter below: kolCount, like volume/marketCap/classification,
+    // comes straight off the raw GMGN trending payload (no secondary
+    // per-token info lookup needed), so it belongs in this first-pass group
+    // over the raw candidate rather than the separate post-lookup loop.
+    if (config.minKolCount > 0) {
+      if (candidate.kolCount == null) {
+        rejected.push(rejectWith(candidate, 'KOL_COUNT_UNKNOWN'));
+        continue;
+      }
+      if (candidate.kolCount < config.minKolCount) {
+        rejected.push(rejectWith(candidate, 'KOL_COUNT_TOO_LOW'));
+        continue;
+      }
     }
     if (candidate.marketCapUsd == null) {
       rejected.push(rejectWith(candidate, 'MC_UNKNOWN'));

@@ -20,6 +20,18 @@ export type MultiCandidate = {
   ageHours: number | null;
   volume6hUsd: number | null;
   liquidityUsd: number | null;
+  /**
+   * KOL / renowned wallet count holding this token, from GMGN's
+   * `renowned_count` field (already used by the manual /screener command —
+   * see gmgn/screener.ts). null = unknown/not a valid number in the raw
+   * GMGN payload — never coerced to 0.
+   *
+   * TODO: GMGN also reports `smart_degen_count` (a related but distinct
+   * signal) on the same raw payload — available but not read/used
+   * anywhere yet. Out of scope for this filter; noted here for reference
+   * if a future filter wants it.
+   */
+  kolCount: number | null;
   classification: CandidateType;
   launchpadPlatform: string | null;
   candidateScore: number;
