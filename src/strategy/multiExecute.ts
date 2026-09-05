@@ -94,6 +94,32 @@ function rejectCandidate(candidate: MultiCandidate, reason: string): RejectedCan
 }
 
 /**
+ * Picks the range width (widthPercent) to use for one candidate's mint.
+ * Placed here rather than multiRange.ts: multiRange.ts is pure tick math
+ * (computeMultiRange takes a widthPercent number, with no knowledge of
+ * MultiCandidate/MultiConfig at all) — this function's job is the
+ * candidate+config-level DECISION of which width number to hand it,
+ * exactly the kind of decision multiExecute.ts already owns at its
+ * computeMultiRange call site below.
+ *
+ * 'static' (default): unconditionally config.rangePercent — byte-for-byte
+ * the same behavior as before rangeMode existed.
+ * 'volume_tiered': candidate.volume6hUsd >= rangeTierVolumeUsd (inclusive)
+ * uses rangeTierHighPercent; anything below uses rangeTierLowPercent.
+ */
+export function resolveRangePercentForCandidate(candidate: MultiCandidate, config: MultiConfig): number {
+  if (config.rangeMode !== 'volume_tiered') return config.rangePercent;
+  // Non-null assertion: every candidate reaching this function already
+  // passed multiCandidates.ts's mandatory VOLUME_UNKNOWN/VOLUME_NON_POSITIVE
+  // checks, so volume6hUsd is guaranteed a real positive number here —
+  // the `| null` in MultiCandidate's own type exists for the pre-filter
+  // raw-candidate stage, not this post-filter one.
+  return candidate.volume6hUsd! >= config.rangeTierVolumeUsd
+    ? config.rangeTierHighPercent
+    : config.rangeTierLowPercent;
+}
+
+/**
  * The single per-candidate pipeline: pool discovery → range calc → risk gate
  * → (optional) execute. Extracted from runMultiStrategy's loop body so any
  * OTHER caller (currently: the agent's `deploy_position` tool, src/agent/
@@ -142,7 +168,7 @@ export async function evaluateAndExecuteCandidate(
   const range = computeMultiRange({
     currentTick: live.currentTick,
     tickSpacing: live.tickSpacing,
-    widthPercent: config.rangePercent,
+    widthPercent: resolveRangePercentForCandidate(candidate, config),
     usdgIsToken0,
   });
 
@@ -278,7 +304,7 @@ export async function executeTradeIntent(params: {
       balancePercent,
       sizeMode,
       fixedAmountHuman,
-      widthPercent: config.rangePercent,
+      widthPercent: resolveRangePercentForCandidate(candidate, config),
       protocol: intent.pool.protocol,
       dex: intent.pool.dex,
       poolId: intent.pool.protocol === 'v4' ? (intent.pool.poolAddress as Hex) : undefined,

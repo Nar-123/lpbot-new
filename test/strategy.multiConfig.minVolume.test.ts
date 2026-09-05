@@ -5,7 +5,8 @@
  * multiCandidates.ts and is not configurable (see
  * strategy.multiCandidates.test.ts). This suite only covers the SEPARATE,
  * optional, operator-controlled floor: env parsing, validation, and the
- * documented "0 = disabled" default.
+ * documented default (200,000 — raised from the original 0/disabled
+ * default; set MULTI_MIN_CANDIDATE_VOLUME_USD=0 explicitly to disable it).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,10 +22,10 @@ function clearEnv(): void {
   delete process.env.MULTI_MIN_CANDIDATE_VOLUME_USD;
 }
 
-test('MULTI_MIN_CANDIDATE_VOLUME_USD defaults to 0 (disabled) when unset', () => {
+test('MULTI_MIN_CANDIDATE_VOLUME_USD defaults to 200,000 when unset', () => {
   clearEnv();
   const cfg = loadMultiConfig(CHAIN);
-  assert.equal(cfg.minCandidateVolumeUsd, 0);
+  assert.equal(cfg.minCandidateVolumeUsd, 200_000);
   assert.equal(cfg.enabled, true);
 });
 
@@ -38,11 +39,11 @@ test('a valid positive MULTI_MIN_CANDIDATE_VOLUME_USD is honored', () => {
   }
 });
 
-test('a malformed (non-numeric) MULTI_MIN_CANDIDATE_VOLUME_USD falls back to the 0 default, never NaN', () => {
+test('a malformed (non-numeric) MULTI_MIN_CANDIDATE_VOLUME_USD falls back to the 200,000 default, never NaN', () => {
   process.env.MULTI_MIN_CANDIDATE_VOLUME_USD = 'not-a-number';
   try {
     const cfg = loadMultiConfig(CHAIN);
-    assert.equal(cfg.minCandidateVolumeUsd, 0);
+    assert.equal(cfg.minCandidateVolumeUsd, 200_000);
     assert.equal(Number.isFinite(cfg.minCandidateVolumeUsd), true);
   } finally {
     clearEnv();
@@ -62,7 +63,7 @@ test('a negative MULTI_MIN_CANDIDATE_VOLUME_USD fails validateMultiConfig — MU
   }
 });
 
-test('MULTI_MIN_CANDIDATE_VOLUME_USD=0 explicitly is valid (equivalent to unset/disabled)', () => {
+test('MULTI_MIN_CANDIDATE_VOLUME_USD=0 explicitly disables the floor (distinct from the 200,000 default — an explicit opt-out, not "same as unset")', () => {
   process.env.MULTI_MIN_CANDIDATE_VOLUME_USD = '0';
   try {
     const cfg = loadMultiConfig(CHAIN);

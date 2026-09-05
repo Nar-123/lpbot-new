@@ -45,31 +45,25 @@ export type MultiConfig = {
   minMarketCapUsd: number;
   minTokenAgeHours: number;
   /**
-   * Optional operator-chosen floor (USD) on candidate.volume6hUsd, ON TOP OF
-   * the always-on, non-configurable requirement that volume be strictly
+   * Operator-chosen floor (USD) on candidate.volume6hUsd, ON TOP OF the
+   * always-on, non-configurable requirement that volume be strictly
    * positive (see multiCandidates.ts's VOLUME_NON_POSITIVE check — a
    * "trending" token reporting $0 or negative 6h volume is a data-integrity
    * failure, not a risk-tolerance choice, so that check is not gated by this
-   * config value). Default 0 = disabled: no floor beyond "genuinely nonzero
-   * positive volume occurred". Phase 4.7 audit (F-07) deliberately does not
-   * hardcode a specific positive dollar figure here — there is no existing,
-   * defensible analytical basis in this codebase for picking one (unlike
-   * minMarketCapUsd, which has an explicit operator-set default) — so the
-   * operator must opt in to a stricter floor themselves once they have a
-   * reasoned number, rather than the code inventing one "to be safer".
+   * config value). Default $200,000 (operator-set, not env-unset) — set
+   * MULTI_MIN_CANDIDATE_VOLUME_USD=0 explicitly to disable this floor
+   * entirely and fall back to "genuinely nonzero positive volume occurred"
+   * as the only requirement.
    */
   minCandidateVolumeUsd: number;
   /**
-   * Optional operator-chosen floor on candidate.kolCount (GMGN's
-   * renowned_count — see multiCandidates.ts). Same contract as
-   * minCandidateVolumeUsd directly above: default 0 = disabled, no floor
-   * beyond whatever the raw candidate happens to report. There is no
-   * existing, defensible analytical basis in this codebase for hardcoding
-   * a specific minimum KOL count here either — the manual /screener
-   * command's own default (10) is an operator-facing UI convenience, not
-   * a validated trading threshold — so the operator must opt in themselves
-   * once they have a reasoned number, rather than the code inventing one
-   * "to be safer".
+   * Operator-chosen floor on candidate.kolCount (GMGN's renowned_count —
+   * see multiCandidates.ts). Default 5, and the comparison is strictly
+   * GREATER THAN this floor (kolCount == minKolCount is rejected, not
+   * passed) — see multiCandidates.ts's KOL_COUNT_TOO_LOW check. Set
+   * MULTI_MIN_KOL_COUNT=0 explicitly to disable this floor entirely (no
+   * candidate is ever rejected on KOL grounds while it is 0, including a
+   * null/unknown kolCount).
    */
   minKolCount: number;
   topN: number;
@@ -85,6 +79,26 @@ export type MultiConfig = {
    */
   minRangePercent: number;
   maxRangePercent: number;
+  /**
+   * 'static' (default, unset MULTI_RANGE_MODE): every candidate uses
+   * rangePercent above, unchanged from before this option existed.
+   * 'volume_tiered': the width is chosen per-candidate based on its
+   * volume6hUsd instead — see multiExecute.ts's
+   * resolveRangePercentForCandidate.
+   */
+  rangeMode: 'static' | 'volume_tiered';
+  /**
+   * volume_tiered mode only (ignored, and NOT validated, in 'static' mode
+   * — see validateMultiConfig): a candidate's volume6hUsd at or above this
+   * USD threshold uses rangeTierHighPercent; below it uses
+   * rangeTierLowPercent. Comparison is >=, so a candidate with volume
+   * exactly equal to this threshold is HIGH-tier.
+   */
+  rangeTierVolumeUsd: number;
+  /** volume_tiered mode only: width for below-threshold ("low volume") candidates. Must be within [minRangePercent, maxRangePercent] when rangeMode='volume_tiered'. */
+  rangeTierLowPercent: number;
+  /** volume_tiered mode only: width for at-or-above-threshold ("high volume") candidates. Must be within [minRangePercent, maxRangePercent] when rangeMode='volume_tiered'. */
+  rangeTierHighPercent: number;
   /** null = fall back to the user's existing size prefs (UserPrefs) */
   positionSizeUsd: number | null;
   /** null = no known USDG address for this chain/config — MULTI entry disabled */
@@ -235,13 +249,19 @@ export function loadMultiConfig(chainId?: SupportedChainId): MultiConfig {
     interval: '6h',
     minMarketCapUsd: envNum('MULTI_MIN_MARKET_CAP_USD', 1_000_000),
     minTokenAgeHours: envNum('MULTI_MIN_TOKEN_AGE_HOURS', 24),
-    minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 0),
-    minKolCount: envNum('MULTI_MIN_KOL_COUNT', 0),
+    minCandidateVolumeUsd: envNum('MULTI_MIN_CANDIDATE_VOLUME_USD', 200_000),
+    minKolCount: envNum('MULTI_MIN_KOL_COUNT', 5),
     topN: Math.round(envNum('MULTI_TOP_N', 10)),
     rangePercent,
     rangePreset,
     minRangePercent: envNum('MULTI_MIN_RANGE_PERCENT', 10),
     maxRangePercent: envNum('MULTI_MAX_RANGE_PERCENT', 90),
+    rangeMode: (process.env.MULTI_RANGE_MODE ?? 'static').trim().toLowerCase() === 'volume_tiered'
+      ? 'volume_tiered'
+      : 'static',
+    rangeTierVolumeUsd: envNum('MULTI_RANGE_TIER_VOLUME_USD', 500_000),
+    rangeTierLowPercent: envNum('MULTI_RANGE_TIER_LOW_PERCENT', 50),
+    rangeTierHighPercent: envNum('MULTI_RANGE_TIER_HIGH_PERCENT', 30),
     positionSizeUsd: envPositiveOrNull('MULTI_POSITION_SIZE_USD'),
     usdgAddress: resolveUsdgAddress(resolvedChainId),
     poolTvlWeight,
@@ -300,6 +320,24 @@ export function validateMultiConfig(c: MultiConfig): { valid: boolean; reason?: 
       valid: false,
       reason: `Resolved range width ${c.rangePercent}% (preset=${c.rangePreset}) is outside the configured safety bounds [${c.minRangePercent}%, ${c.maxRangePercent}%] — widen MULTI_MIN_RANGE_PERCENT/MULTI_MAX_RANGE_PERCENT or pick a different MULTI_RANGE_PRESET/MULTI_RANGE_PERCENT`,
     };
+  }
+  // Tier percents are only meaningful (and only validated) in
+  // volume_tiered mode — in 'static' mode they are never read by
+  // resolveRangePercentForCandidate, so an out-of-bounds value sitting
+  // unused in config must not disable MULTI.
+  if (c.rangeMode === 'volume_tiered') {
+    if (c.rangeTierLowPercent < c.minRangePercent || c.rangeTierLowPercent > c.maxRangePercent) {
+      return {
+        valid: false,
+        reason: `MULTI_RANGE_TIER_LOW_PERCENT (${c.rangeTierLowPercent}%) is outside the configured safety bounds [${c.minRangePercent}%, ${c.maxRangePercent}%]`,
+      };
+    }
+    if (c.rangeTierHighPercent < c.minRangePercent || c.rangeTierHighPercent > c.maxRangePercent) {
+      return {
+        valid: false,
+        reason: `MULTI_RANGE_TIER_HIGH_PERCENT (${c.rangeTierHighPercent}%) is outside the configured safety bounds [${c.minRangePercent}%, ${c.maxRangePercent}%]`,
+      };
+    }
   }
   if (c.positionSizeUsd != null && !(c.positionSizeUsd > 0)) {
     return { valid: false, reason: 'MULTI_POSITION_SIZE_USD must be > 0 when set' };

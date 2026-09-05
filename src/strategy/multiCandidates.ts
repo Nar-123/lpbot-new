@@ -161,18 +161,21 @@ export async function fetchAndFilterCandidates(
       rejected.push(rejectWith(candidate, 'VOLUME_TOO_LOW'));
       continue;
     }
-    // KOL/renowned-wallet-count floor — opt-in, default 0 (disabled), same
-    // contract as minCandidateVolumeUsd above. Placed here rather than with
-    // the age filter below: kolCount, like volume/marketCap/classification,
-    // comes straight off the raw GMGN trending payload (no secondary
-    // per-token info lookup needed), so it belongs in this first-pass group
-    // over the raw candidate rather than the separate post-lookup loop.
+    // KOL/renowned-wallet-count floor — set MULTI_MIN_KOL_COUNT=0 to
+    // disable. Placed here rather than with the age filter below:
+    // kolCount, like volume/marketCap/classification, comes straight off
+    // the raw GMGN trending payload (no secondary per-token info lookup
+    // needed), so it belongs in this first-pass group over the raw
+    // candidate rather than the separate post-lookup loop. Comparison is
+    // strictly GREATER THAN the floor — kolCount == minKolCount is
+    // rejected, not passed (e.g. the default floor of 5 rejects a
+    // kolCount of exactly 5; 6 is required to pass).
     if (config.minKolCount > 0) {
       if (candidate.kolCount == null) {
         rejected.push(rejectWith(candidate, 'KOL_COUNT_UNKNOWN'));
         continue;
       }
-      if (candidate.kolCount < config.minKolCount) {
+      if (candidate.kolCount <= config.minKolCount) {
         rejected.push(rejectWith(candidate, 'KOL_COUNT_TOO_LOW'));
         continue;
       }

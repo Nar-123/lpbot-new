@@ -353,12 +353,12 @@ test('F-07 K: an extremely large configured minimum deterministically rejects ev
   assert.ok(rejected.every((r) => r.rejectedReason === 'VOLUME_TOO_LOW'));
 });
 
-test('F-07 K: a non-finite (Infinity) MULTI_MIN_CANDIDATE_VOLUME_USD is impossible via envNum\'s existing finiteness guard — falls back to the 0 default rather than rejecting everything', async () => {
+test('F-07 K: a non-finite (Infinity) MULTI_MIN_CANDIDATE_VOLUME_USD is impossible via envNum\'s existing finiteness guard — falls back to the 200,000 default rather than rejecting everything', async () => {
   process.env.MULTI_MIN_CANDIDATE_VOLUME_USD = '1e400'; // parses to Infinity
   try {
     const { loadMultiConfig } = await import('../src/strategy/multiConfig.js');
     const cfg = loadMultiConfig(4663);
-    assert.equal(cfg.minCandidateVolumeUsd, 0, 'envNum must fall back to the default, not silently accept Infinity');
+    assert.equal(cfg.minCandidateVolumeUsd, 200_000, 'envNum must fall back to the default, not silently accept Infinity');
     assert.equal(cfg.enabled, true);
   } finally {
     delete process.env.MULTI_MIN_CANDIDATE_VOLUME_USD;
@@ -450,7 +450,7 @@ test('MULTI_MIN_KOL_COUNT=10: a candidate with kolCount=null (unknown) fails clo
   assert.equal(rejected[0].rejectedReason, 'KOL_COUNT_UNKNOWN');
 });
 
-test('MULTI_MIN_KOL_COUNT=10: kolCount exactly at the floor passes (boundary is inclusive)', async () => {
+test('MULTI_MIN_KOL_COUNT=10: kolCount exactly at the floor is rejected (boundary is exclusive — strictly greater than required)', async () => {
   const cfg = baseConfig({ minKolCount: 10 });
   const t = token({ address: '0xaaa', renowned_count: 10 });
   const { candidates, rejected } = await fetchAndFilterCandidates(cfg, {
@@ -458,8 +458,40 @@ test('MULTI_MIN_KOL_COUNT=10: kolCount exactly at the floor passes (boundary is 
     infoFetcher: async () => infoAtAge(48),
     now: NOW,
   });
+  assert.equal(candidates.length, 0);
+  assert.equal(rejected[0].rejectedReason, 'KOL_COUNT_TOO_LOW');
+});
+
+test('MULTI_MIN_KOL_COUNT=10: kolCount one above the floor (11) passes', async () => {
+  const cfg = baseConfig({ minKolCount: 10 });
+  const t = token({ address: '0xaaa', renowned_count: 11 });
+  const { candidates, rejected } = await fetchAndFilterCandidates(cfg, {
+    fetcher: async () => [t],
+    infoFetcher: async () => infoAtAge(48),
+    now: NOW,
+  });
   assert.equal(rejected.length, 0);
   assert.equal(candidates.length, 1);
+});
+
+test('default floor of 5: kolCount=5 is rejected KOL_COUNT_TOO_LOW, kolCount=6 passes (matches the operator-specified example exactly)', async () => {
+  const cfg = baseConfig({ minKolCount: 5 });
+
+  const rejectedResult = await fetchAndFilterCandidates(cfg, {
+    fetcher: async () => [token({ address: '0xaaa', renowned_count: 5 })],
+    infoFetcher: async () => infoAtAge(48),
+    now: NOW,
+  });
+  assert.equal(rejectedResult.candidates.length, 0);
+  assert.equal(rejectedResult.rejected[0].rejectedReason, 'KOL_COUNT_TOO_LOW');
+
+  const passedResult = await fetchAndFilterCandidates(cfg, {
+    fetcher: async () => [token({ address: '0xbbb', renowned_count: 6 })],
+    infoFetcher: async () => infoAtAge(48),
+    now: NOW,
+  });
+  assert.equal(passedResult.rejected.length, 0);
+  assert.equal(passedResult.candidates.length, 1);
 });
 
 test('MULTI_MIN_KOL_COUNT=10: a malformed kolCount (NaN in the raw payload) fails closed as KOL_COUNT_UNKNOWN, not coerced to a number', async () => {
