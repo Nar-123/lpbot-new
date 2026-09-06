@@ -19,6 +19,7 @@
  */
 import type { Bot } from 'grammy';
 import { config as appConfig } from '../config.js';
+import { getUserPrefs } from '../db/index.js';
 import { getActiveStrategyName, loadMultiConfig } from './multiConfig.js';
 import { runMultiStrategy } from './multiExecute.js';
 import type { MultiStrategyRun } from './types.js';
@@ -69,7 +70,17 @@ async function runOneCycle(bot: Bot): Promise<void> {
   inFlight = true;
   try {
     if (!config.enabled) return; // invalid/disabled config (see validateMultiConfig) — nothing to run
-    const run = await deps.runMultiStrategy(config, { dryRun: false });
+    // Sizing (balancePercent/sizeMode/fixedAmountHuman) must come from the
+    // actual operator's saved /settings, never runMultiStrategy's own
+    // DEFAULT_PREFS fallback (a stale, unconfigurable value) — this
+    // codebase has exactly one hot wallet, so the first authorized
+    // Telegram user (TELEGRAM_USER_IDS) is that operator. Mirrors the
+    // manual /multi command's own getUserPrefs(ctx.from!.id) pattern
+    // (bot.ts), substituting "the configured operator" for "whoever sent
+    // this specific request" since a scheduled cycle has no request context.
+    const firstUserId = [...appConfig.allowedUserIds][0];
+    const prefs = getUserPrefs(firstUserId);
+    const run = await deps.runMultiStrategy(config, { dryRun: false, prefs });
     if (run.sourceError) {
       // A candidate-source failure (GMGN rate-limited, gmgn-cli not found,
       // timed out, ...) must never look identical to "0 candidates today"

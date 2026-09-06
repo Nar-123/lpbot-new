@@ -30,6 +30,7 @@ const {
   __resetSchedulerForTests,
 } = await import('../src/strategy/multiScheduler.js');
 const { __resetMultiCooldownForTests } = await import('../src/strategy/multiRisk.js');
+const { setUserPrefs } = await import('../src/db/index.js');
 
 const fakeBot = { api: { sendMessage: async () => {} } } as unknown as Bot;
 
@@ -218,4 +219,29 @@ test('a candidate-source failure (sourceError) is logged AND notified — never 
   assert.notEqual(loggedError, null, 'a sourceError must be logged to the console, not swallowed silently');
   assert.equal(notifyCount, 1, 'a sourceError must notify allowed users — silence here is indistinguishable from a genuinely quiet market');
   assert.match(lastMessage, /gmgn-cli rate limited \(market trending\)/, 'the notification must surface the actual sourceError reason');
+});
+
+test('a scheduled cycle passes the operator\'s ACTUAL saved balancePercent (35) to runMultiStrategy, never DEFAULT_PREFS\'s 50', async () => {
+  process.env.STRATEGY = 'multi';
+  // TELEGRAM_USER_IDS is '1' for this whole file — set that user's real
+  // saved preference to something that must NEVER be confused with
+  // DEFAULT_PREFS.balancePercent (50, db/index.ts).
+  setUserPrefs(1, { sizeMode: 'percent', balancePercent: 35 });
+
+  let receivedPrefs: { balancePercent?: number; sizeMode?: string } | undefined;
+  __setSchedulerDepsForTests({
+    runMultiStrategy: (async (_config, opts) => {
+      receivedPrefs = opts?.prefs;
+      return fakeRun();
+    }) as typeof import('../src/strategy/multiExecute.js').runMultiStrategy,
+  });
+
+  await __runCycleForTests(fakeBot);
+
+  assert.ok(receivedPrefs, 'runMultiStrategy must be called with an opts.prefs, not left unset');
+  assert.equal(
+    receivedPrefs!.balancePercent,
+    35,
+    'the scheduler must use the operator\'s actual saved /settings value, not silently fall back to DEFAULT_PREFS (50)',
+  );
 });
