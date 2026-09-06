@@ -70,7 +70,19 @@ async function runOneCycle(bot: Bot): Promise<void> {
   try {
     if (!config.enabled) return; // invalid/disabled config (see validateMultiConfig) — nothing to run
     const run = await deps.runMultiStrategy(config, { dryRun: false });
-    if (run.executed.length > 0) {
+    if (run.sourceError) {
+      // A candidate-source failure (GMGN rate-limited, gmgn-cli not found,
+      // timed out, ...) must never look identical to "0 candidates today"
+      // from the outside — both are otherwise silent, and an operator
+      // watching for Telegram notifications would wrongly read a failed
+      // fetch as a quiet market. See run.sourceError's own doc comment
+      // (types.ts) for the same distinction bot.ts's /multi report makes.
+      console.error('[multi-scheduler] candidate source failed', run.sourceError);
+      await notifyAll(
+        bot,
+        `⚠️ MULTI screening cycle failed to fetch candidates: ${run.sourceError.message} — will retry next cycle`,
+      );
+    } else if (run.executed.length > 0) {
       await notifyAll(bot, summarize(run));
     }
   } catch (e) {

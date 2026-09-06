@@ -183,3 +183,39 @@ test('a cycle with executed positions notifies allowed users; an empty cycle (no
   await __runCycleForTests(notifyingBot);
   assert.equal(notifyCount, 1, 'a cycle that actually opened a position must notify allowed users');
 });
+
+test('a candidate-source failure (sourceError) is logged AND notified — never silently indistinguishable from "0 candidates today"', async () => {
+  process.env.STRATEGY = 'multi';
+  let notifyCount = 0;
+  let lastMessage = '';
+  const notifyingBot = {
+    api: {
+      sendMessage: async (_uid: number, text: string) => {
+        notifyCount++;
+        lastMessage = text;
+      },
+    },
+  } as unknown as Bot;
+
+  __setSchedulerDepsForTests({
+    runMultiStrategy: (async () =>
+      fakeRun({
+        sourceError: { code: 'GMGN_CLI_RATE_LIMITED', message: 'gmgn-cli rate limited (market trending)' },
+      })) as typeof import('../src/strategy/multiExecute.js').runMultiStrategy,
+  });
+
+  const originalConsoleError = console.error;
+  let loggedError: unknown[] | null = null;
+  console.error = (...args: unknown[]) => {
+    loggedError = args;
+  };
+  try {
+    await __runCycleForTests(notifyingBot);
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.notEqual(loggedError, null, 'a sourceError must be logged to the console, not swallowed silently');
+  assert.equal(notifyCount, 1, 'a sourceError must notify allowed users — silence here is indistinguishable from a genuinely quiet market');
+  assert.match(lastMessage, /gmgn-cli rate limited \(market trending\)/, 'the notification must surface the actual sourceError reason');
+});
