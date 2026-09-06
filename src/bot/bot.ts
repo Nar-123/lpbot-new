@@ -1697,7 +1697,7 @@ export function createBot(): Bot {
       await ctx.reply('⛔ MULTI is not active on this bot (set STRATEGY=multi to enable).');
       return;
     }
-    await ctx.reply('Scanning GMGN 6h trending for MULTI candidates…');
+    await ctx.reply(`Scanning GMGN ${loadMultiConfig().interval} trending for MULTI candidates…`);
     await runMultiDryRunReport(ctx, false);
   });
 
@@ -5957,13 +5957,17 @@ async function executeUnwrap(
 
 // ── MULTI strategy report + execute ─────────────────────────────────────────
 
-function formatMultiCandidateLine(intent: TradeIntent, candidate?: MultiCandidate): string {
+function formatMultiCandidateLine(
+  intent: TradeIntent,
+  interval: string,
+  candidate?: MultiCandidate,
+): string {
   const label = candidate ? candidate.symbol : intent.token.slice(0, 10);
   const mc = candidate?.marketCapUsd != null ? formatUsd(candidate.marketCapUsd) : 'UNKNOWN';
   const age = candidate?.ageHours != null ? `${candidate.ageHours.toFixed(1)}h` : 'UNKNOWN';
   const vol = candidate?.volumeUsd != null ? formatUsd(candidate.volumeUsd) : 'UNKNOWN';
   return (
-    `• ${label} — MC ${mc} · age ${age} · vol6h ${vol}\n` +
+    `• ${label} — MC ${mc} · age ${age} · vol${interval} ${vol}\n` +
     `  pool ${String(intent.pool.poolAddress).slice(0, 10)}… fee=${intent.fee}bps · candScore=${intent.candidateScore.toFixed(3)} poolScore=${intent.poolScore.toFixed(3)}\n` +
     `  ${intent.reason}`
   );
@@ -5977,7 +5981,7 @@ function formatMultiRejectedLine(r: RejectedCandidate): string {
 function formatMultiReport(run: MultiStrategyRun, config: MultiConfig): string {
   const header =
     `📊 MULTI CANDIDATES — ${run.dryRun ? 'DRY RUN (no tx)' : 'LIVE'}\n` +
-    `chain=${CHAINS[run.chainId].name} · interval=6h · minMC=$${config.minMarketCapUsd.toLocaleString()} · ` +
+    `chain=${CHAINS[run.chainId].name} · interval=${config.interval} · minMC=$${config.minMarketCapUsd.toLocaleString()} · ` +
     `minAge=${config.minTokenAgeHours}h · topN=${config.topN} · usdg=${config.usdgAddress}`;
 
   // A candidate-source failure (gmgn-cli not found/timed out/exec failed) is
@@ -5999,6 +6003,7 @@ function formatMultiReport(run: MultiStrategyRun, config: MultiConfig): string {
         .map((intent) =>
           formatMultiCandidateLine(
             intent,
+            config.interval,
             run.candidates.find((c) => c.address.toLowerCase() === intent.token.toLowerCase()),
           ),
         )

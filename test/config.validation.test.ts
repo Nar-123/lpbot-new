@@ -222,6 +222,14 @@ test('validation errors never contain anything resembling a secret value', () =>
 
 // ── 20. Mandatory real startup-config test (real child process) ─────────
 
+// KNOWN LIMITATION: this fixture spawns without an explicit cwd,
+// so if a REAL .env file exists at the project root with RPC_4663
+// set, dotenv (imported by src/config.ts) will repopulate a
+// "deleted" RPC_4663 from disk, causing tests that expect it to be
+// genuinely absent to fail on a machine with a live .env. Passes
+// cleanly in CI/sandboxes with no .env file. Not fixed here — would
+// require passing an explicit empty cwd or an env-file-free scratch
+// directory to the child process.
 function runConfigFixture(envOverrides: Record<string, string | undefined>): Promise<{ code: number; stdout: string; stderr: string }> {
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unicrit-config-test-'));
   const env: NodeJS.ProcessEnv = {
